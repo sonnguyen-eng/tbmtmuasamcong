@@ -124,6 +124,6 @@ if __name__ == "__main__":
     print("-> Đang gửi dữ liệu sang Gemini để tổng hợp báo cáo...")
     email_body = generate_report_with_gemini(results, KEYWORDS)
     
-    subject = f"[TBMT CNTT] Danh sách Thông báo mời thầu ngày {datetime.now().strftime('%d/%m/%Y')}"
+    subject = f"[TBMT Noi Soi] Danh sách Thông báo mời thầu ngày {datetime.now().strftime('%d/%m/%Y')}"
     send_email(subject, email_body)
     print("=== HOÀN THÀNH ===")
