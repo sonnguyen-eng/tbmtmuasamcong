@@ -13,7 +13,7 @@ SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD")
 RECEIVER_EMAIL = SENDER_EMAIL # Gửi về chính email của bạn
 
 # DANH SÁCH TỪ KHÓA BẠN MUỐN TÌM (Có thể chỉnh sửa danh sách này)
-KEYWORDS = ["phần mềm", "máy tính", "chuyển đổi số", "hạ tầng CNTT", "thiết bị mạng"]
+KEYWORDS = ["Nội soi", "Nội soi tiêu hóa", "ERCP", "Bàn mổ", "Đèn mổ", "Nội soi dạ dày", "Nội soi khí phế quản"]
 
 def fetch_muasamcong_data():
     url = "https://muasamcong.mof.gov.vn/api/egp/bidding/services/app/tbmt/search"
