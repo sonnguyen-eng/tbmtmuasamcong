@@ -13,7 +13,7 @@ SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD")
 RECEIVER_EMAIL = SENDER_EMAIL  # Gửi trực tiếp về email của bạn
 
 # DANH SÁCH TỪ KHÓA CẦN TÌM KIẾM THÔNG BÁO MỜI THẦU
-KEYWORDS = ["Nội soi", "nội soi tiêu hóa", "nội soi ERCP", "Nội soi khí phế quản", "bàn mổ", "đèn mổ", "máy hấp tiệt trùng"]
+KEYWORDS = ["Nội soi", "nội soi tiêu hóa", "nội soi ERCP", "Nội soi khí phế quản", "bàn mổ", "đèn mổ", "máy hấp tiệt trùng", "thiết bị y tế"]
 
 def fetch_tbmt_data(keyword):
     """
