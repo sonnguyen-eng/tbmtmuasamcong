@@ -41,7 +41,7 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
 
-# 3. TRUY VẤN API TBMT VỚI PAYLOAD CHUẨN F12 SEARCH (CHÍNH XÁC WEB MUA SẮM CÔNG)
+# 3. TRUY VẤN API SMART SEARCH TBMT VỚI PAYLOAD MẢNG CHUẨN F12
 def fetch_tbmt_by_keyword(session, keyword):
     url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/smart/search"
     
@@ -56,37 +56,36 @@ def fetch_tbmt_by_keyword(session, keyword):
     items_found = []
     kw_str = str(keyword).strip()
 
-    # Quét 4 trang đầu tiên cho mỗi từ khóa (200 gói thầu/từ khóa)
     for page in range(4):
-        # Payload Object JSON chuẩn F12 của Mua Sắm Công V2
-        payload = {
-            "pageSize": 50,
-            "pageNumber": page,
-            "query": [
-                {
-                    "index": "es-tbmt",
-                    "matchType": "all-1",
-                    "matchFields": ["notifyNo", "bidName"],
-                    "keySearch": kw_str
-                },
-                {
-                    "name": "type",
-                    "searchType": "in",
-                    "fieldValues": ["es-tbmt"]
-                }
-            ]
-        }
+        # Payload MẢNG JSON chuẩn F12 cho API /smart/search
+        payload = [
+            {
+                "pageSize": 50,
+                "pageNumber": str(page),
+                "query": [
+                    {
+                        "index": "es-tbmt",
+                        "matchType": "all-1",
+                        "matchFields": ["notifyNo", "bidName"],
+                        "keySearch": kw_str
+                    },
+                    {
+                        "name": "type",
+                        "searchType": "in",
+                        "fieldValues": ["es-tbmt"]
+                    }
+                ]
+            }
+        ]
         try:
             res = session.post(url, json=payload, headers=headers, timeout=25, verify=False)
             if res.status_code == 200:
                 data = res.json()
                 data_list = []
-                if isinstance(data, dict):
-                    data_list = data.get("result", {}).get("data", [])
-                    if not data_list and isinstance(data.get("result"), list):
-                        data_list = data.get("result", [])
-                elif isinstance(data, list) and len(data) > 0:
+                if isinstance(data, list) and len(data) > 0:
                     data_list = data[0].get("result", {}).get("data", [])
+                elif isinstance(data, dict):
+                    data_list = data.get("result", {}).get("data", [])
 
                 if not data_list:
                     break
