@@ -10,7 +10,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from requests.adapters import HTTPAdapter
 
-# 1. TẮT CẢNH BÁO MÃ HÓA SSL VỚI SERVER MUA SẮM CÔNG
+# 1. TẮT CẢNH BÁO SSL SECURITY LEVEL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class CustomSSLAdapter(HTTPAdapter):
@@ -25,7 +25,7 @@ class CustomSSLAdapter(HTTPAdapter):
         kwargs['ssl_context'] = ctx
         return super().init_poolmanager(*args, **kwargs)
 
-# 2. CẤU HÌNH DỮ LIỆU & DANH SÁCH 14 TỪ KHÓA
+# 2. CẤU HÌNH DỮ LIỆU & 14 TỪ KHÓA
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
 RECEIVER_EMAIL = SENDER_EMAIL
@@ -41,7 +41,7 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
 
-# 3. TRUY VẤN API SMART SEARCH THỬ NGHIỆM ĐA PAYLOAD (CHỐNG LỖI HTTP 400)
+# 3. TRUY VẤN DỮ LIỆU TBMT QUA SMART SEARCH CHUẨN MẢNG JSON F12
 def fetch_tbmt_by_keyword(session, keyword):
     url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/smart/search"
     
@@ -56,63 +56,77 @@ def fetch_tbmt_by_keyword(session, keyword):
     items_found = []
     kw_str = str(keyword).strip()
 
-    for page in range(3):
-        # Cấu trúc Payload 1: Dạng Mảng JSON tiêu chuẩn F12 V2
-        payload_1 = [
+    for page in range(4):
+        # Payload chuẩn dạng mảng bọc đầy đủ matchFields của TBMT V2
+        payload = [
             {
                 "pageSize": 50,
                 "pageNumber": str(page),
                 "query": [
                     {
                         "index": "es-tbmt",
+                        "matchType": "all-1",
+                        "matchFields": ["notifyNo", "bidName"],
                         "keySearch": kw_str
+                    },
+                    {
+                        "name": "type",
+                        "searchType": "in",
+                        "fieldValues": ["es-tbmt"]
                     }
                 ]
             }
         ]
         
-        # Cấu trúc Payload 2: Dạng Object JSON dự phòng
-        payload_2 = {
-            "pageSize": 50,
-            "pageNumber": page,
-            "query": [
-                {
-                    "index": "es-tbmt",
-                    "keySearch": kw_str
-                }
-            ]
-        }
+        try:
+            res = session.post(url, json=payload, headers=headers, timeout=25, verify=False)
+            if res.status_code == 200:
+                data = res.json()
+                data_list = []
+                if isinstance(data, list) and len(data) > 0:
+                    data_list = data[0].get("result", {}).get("data", [])
+                elif isinstance(data, dict):
+                    data_list = data.get("result", {}).get("data", [])
 
-        success = False
-        for p_idx, payload in enumerate([payload_1, payload_2], 1):
-            try:
-                res = session.post(url, json=payload, headers=headers, timeout=20, verify=False)
-                if res.status_code == 200:
-                    data = res.json()
-                    data_list = []
-                    if isinstance(data, list) and len(data) > 0:
-                        data_list = data[0].get("result", {}).get("data", [])
-                    elif isinstance(data, dict):
-                        data_list = data.get("result", {}).get("data", [])
-
-                    if data_list:
-                        items_found.extend(data_list)
-                        success = True
+                if not data_list:
+                    break
+                
+                items_found.extend(data_list)
+                if len(data_list) < 50:
+                    break
+            else:
+                # Nếu payload chuẩn 1 bị từ chối, thử fallback sang payload rút gọn
+                payload_fallback = [
+                    {
+                        "pageSize": 50,
+                        "pageNumber": str(page),
+                        "query": [
+                            {
+                                "index": "es-tbmt",
+                                "keySearch": kw_str
+                            }
+                        ]
+                    }
+                ]
+                res_fb = session.post(url, json=payload_fallback, headers=headers, timeout=25, verify=False)
+                if res_fb.status_code == 200:
+                    data_fb = res_fb.json()
+                    data_list = data_fb[0].get("result", {}).get("data", []) if isinstance(data_fb, list) and len(data_fb) > 0 else []
+                    if not data_list:
                         break
+                    items_found.extend(data_list)
                 else:
-                    if p_idx == 2:
-                        print(f"[HTTP {res.status_code}] Từ khóa '{keyword}' (Payload {p_idx}): {res.text[:120]}")
-            except Exception as e:
-                print(f"[LỖI KẾT NỐI] Từ khóa '{keyword}' (Payload {p_idx}): {e}")
-
-        if not success:
+                    print(f"[CẢNH BÁO HTTP {res.status_code}] Từ khóa '{keyword}' tại trang {page}")
+                    break
+            time.sleep(0.3)
+        except Exception as e:
+            print(f"[LỖI KẾT NỐI API] Từ khóa '{keyword}' trang {page}: {e}")
             break
-        time.sleep(0.2)
 
     return items_found
 
 
-# 4. TRÍCH XUẤT NỘI DUNG SÂU CHI TIẾT
+# 4. CHUYỂN TOÀN BỘ NESTED JSON THÀNH STR ĐỂ DEEP-SEARCH HÀNG HÓA CHI TIẾT
 def extract_full_searchable_text(item):
     try:
         return json.dumps(item, ensure_ascii=False).lower()
@@ -131,10 +145,10 @@ def main_tbmt():
     total_raw_scanned = 0
 
     for kw in KEYWORDS:
-        print(f"-> Truy vấn API cho từ khóa: '{kw}'...")
+        print(f"-> Truy vấn API Smart Search cho từ khóa: '{kw}'...")
         raw_items = fetch_tbmt_by_keyword(session, kw)
         total_raw_scanned += len(raw_items)
-        print(f"   + Tìm thấy từ server: {len(raw_items)} bản ghi.")
+        print(f"   + Server trả về: {len(raw_items)} bản ghi.")
 
         for item in raw_items:
             code = str(item.get("bidNo") or item.get("notifyNo") or item.get("code") or item.get("id") or "")
@@ -143,6 +157,7 @@ def main_tbmt():
             
             full_text = extract_full_searchable_text(item)
             
+            # Quét 14 từ khóa sâu trong toàn bộ cấu trúc JSON
             if kw.lower() in full_text:
                 if code and code not in unique_matches:
                     location = "Tiêu đề" if kw.lower() in f"{code} {title}".lower() else "Chi tiết Hàng hóa"
