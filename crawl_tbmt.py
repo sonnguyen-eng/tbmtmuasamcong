@@ -41,23 +41,43 @@ def init_driver():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     return driver
 
-# 3. TRUY VẤN API SMART SEARCH SỬ DỤNG TOKEN & PAYLOAD CHUẨN TỪ CURL
+# 3. TRÍCH XUẤT TOKEN ĐỘNG VÀ TRUY VẤN DỮ LIỆU CHUẨN
 def fetch_tbmt_by_smart_search_curl(driver):
     print("-> Đang mở trình duyệt và khởi tạo Session Mua Sắm Công...")
     driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
-    time.sleep(8) # Chờ Liferay Portal khởi tạo Cookie & Token
+    time.sleep(10) # Chờ Liferay Portal khởi tạo Cookie & Token URL
+
+    # Trích xuất Token bảo mật động sinh ra trên trình duyệt
+    js_get_token = """
+    let token = '';
+    let entries = window.performance.getEntriesByType('resource');
+    for (let e of entries) {
+        if (e.name && e.name.includes('smart/search?token=')) {
+            let match = e.name.match(/token=([^&]+)/);
+            if (match) {
+                token = match[1];
+                break;
+            }
+        }
+    }
+    return token;
+    """
+    token_val = driver.execute_script(js_get_token)
+    print(f"-> Token bảo mật trích xuất từ Session: {token_val[:20]}..." if token_val else "-> Không tìm thấy Token động, thử gọi endpoint chuẩn...")
 
     unique_matches = {}
 
-    # Đoạn mã JS thực thi fetch đúng cấu trúc cURL từ trình duyệt
     js_fetch_search = """
     var callback = arguments[arguments.length - 1];
     var kw = arguments[0];
+    var token = arguments[1];
     
-    // Đọc token từ URL trình duyệt nếu có hoặc gọi trực tiếp qua service
-    let searchUrl = '/o/egp-portal-contractor-selection-v2/services/smart/search';
+    let url = '/o/egp-portal-contractor-selection-v2/services/smart/search';
+    if (token) {
+        url += '?token=' + token;
+    }
     
-    fetch(searchUrl, {
+    fetch(url, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -86,7 +106,7 @@ def fetch_tbmt_by_smart_search_curl(driver):
     for kw in KEYWORDS:
         print(f"-> Truy vấn API Smart Search cho từ khóa: '{kw}'...")
         try:
-            res = driver.execute_async_script(js_fetch_search, kw)
+            res = driver.execute_async_script(js_fetch_search, kw, token_val)
             data_list = []
             
             if isinstance(res, list) and len(res) > 0:
@@ -101,7 +121,7 @@ def fetch_tbmt_by_smart_search_curl(driver):
                 title = str(item.get("bidName") or item.get("name") or item.get("title") or "")
                 investor = str(item.get("procuringEntityName") or item.get("investorName") or "")
                 
-                # Deep-scan text bao gồm toàn bộ chuỗi escape formValue
+                # Deep-scan bao gồm chuỗi escape formValue
                 raw_str = json.dumps(item, ensure_ascii=False).lower()
                 form_val = item.get("formValue")
                 if form_val and isinstance(form_val, str):
