@@ -40,7 +40,7 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
 
-# 3. TRUY VẤN DỮ LIỆU THẦU QUA SMART SEARCH (CHÍNH XÁC WEB MUA SẮM CÔNG)
+# 3. TRUY VẤN DỮ LIỆU TBMT QUA SMART SEARCH (DẠNG OBJECT JSON chuẩn HTTP 200)
 def fetch_all_tbmt_raw(session):
     url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/smart/search"
     headers = {
@@ -54,33 +54,32 @@ def fetch_all_tbmt_raw(session):
     collected_items = []
     # Quét 10 trang dữ liệu mới nhất (500 gói thầu)
     for page in range(10):
-        payload = [
-            {
-                "pageSize": 50,
-                "pageNumber": str(page),
-                "query": [
-                    {
-                        "index": "es-tbmt",
-                        "matchType": "all-1",
-                        "matchFields": ["notifyNo", "bidName"]
-                    },
-                    {
-                        "name": "type",
-                        "searchType": "in",
-                        "fieldValues": ["es-tbmt"]
-                    }
-                ]
-            }
-        ]
+        # Payload dạng Object JSON đơn cho TBMT (không dùng mảng [])
+        payload = {
+            "pageSize": 50,
+            "pageNumber": page,
+            "query": [
+                {
+                    "index": "es-tbmt",
+                    "matchType": "all-1",
+                    "matchFields": ["notifyNo", "bidName"]
+                },
+                {
+                    "name": "type",
+                    "searchType": "in",
+                    "fieldValues": ["es-tbmt"]
+                }
+            ]
+        }
         try:
             res = session.post(url, json=payload, headers=headers, timeout=25, verify=False)
             if res.status_code == 200:
                 data = res.json()
                 data_list = []
-                if isinstance(data, list) and len(data) > 0:
-                    data_list = data[0].get("result", {}).get("data", [])
-                elif isinstance(data, dict):
+                if isinstance(data, dict):
                     data_list = data.get("result", {}).get("data", [])
+                elif isinstance(data, list) and len(data) > 0:
+                    data_list = data[0].get("result", {}).get("data", [])
 
                 if not data_list:
                     print(f"-> Dừng phân trang tại trang {page}: Không có bản ghi mới.")
