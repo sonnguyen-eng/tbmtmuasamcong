@@ -9,13 +9,9 @@ from email.mime.text import MIMEText
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-# 1. CẤU HÌNH BIẾN MÔI TRƯỜNG & DANH SÁCH 14 TỪ KHÓA Y TẾ CHUẨN
+# 1. CẤU HÌNH BIẾN MÔI TRƯỜNG & DANH SÁCH 14 TỪ KHÓA Y TẾ
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
@@ -32,7 +28,7 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 BASE_DOMAIN = "muasamcong.mof.gov.vn"
 
-# 2. KHỞI TẠO CHROME HEADLESS CHỐNG LỖI INTERACTABLE
+# 2. KHỞI TẠO CHROME HEADLESS
 def init_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
@@ -45,113 +41,84 @@ def init_driver():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     return driver
 
-# 3. TƯƠNG TÁC JS TRÁNH LỖI ELEMENT NOT INTERACTABLE
-def fetch_tbmt_by_searching_keywords(driver):
-    print("-> Đang mở trình duyệt Mua Sắm Công...")
+# 3. TRUY VẤN API SMART SEARCH QUA CONTEXT TRÌNH DUYỆT BẰNG JS FETCH
+def fetch_tbmt_by_smart_search(driver):
+    print("-> Đang mở trình duyệt và khởi tạo Session Mua Sắm Công...")
     driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
-    time.sleep(8)
+    time.sleep(8) # Chờ Liferay Portal khởi tạo xong Token & Cookie
 
-    unique_results = {}
-    wait = WebDriverWait(driver, 10)
+    unique_matches = {}
+
+    js_fetch_search = """
+    var callback = arguments[arguments.length - 1];
+    var kw = arguments[0];
+    
+    fetch('/o/egp-portal-contractor-selection-v2/services/smart/search', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/plain, */*'
+        },
+        body: JSON.stringify([{
+            pageSize: 50,
+            pageNumber: "0",
+            query: [{
+                index: "es-contractor-selection",
+                keyWord: kw,
+                matchType: "all-1",
+                matchFields: ["notifyNo", "bidName"],
+                filters: [{ fieldName: "type", searchType: "in", fieldValues: ["es-notify-contractor"] }]
+            }]
+        }])
+    })
+    .then(response => response.json())
+    .then(data => callback(data))
+    .catch(err => callback({ error: err.toString() }));
+    """
 
     for kw in KEYWORDS:
-        print(f"-> Đang tìm kiếm giao diện cho từ khóa: '{kw}'...")
+        print(f"-> Truy vấn API Smart Search cho từ khóa: '{kw}'...")
         try:
-            # Dùng JS tìm ô input hiển thị công khai thực sự trên trang
-            js_fill_and_search = """
-            let kw = arguments[0];
-            let inputs = Array.from(document.querySelectorAll('input[type="text"], input[placeholder*="Tìm"], input[class*="search"]'));
-            let visibleInput = inputs.find(i => i.offsetWidth > 0 && i.offsetHeight > 0) || inputs[0];
+            res = driver.execute_async_script(js_fetch_search, kw)
+            data_list = []
             
-            if (visibleInput) {
-                visibleInput.focus();
-                visibleInput.value = kw;
-                visibleInput.dispatchEvent(new Event('input', { bubbles: true }));
-                visibleInput.dispatchEvent(new Event('change', { bubbles: true }));
+            if isinstance(res, list) and len(res) > 0:
+                data_list = res[0].get("result", {}).get("data", [])
+            elif isinstance(res, dict):
+                data_list = res.get("result", {}).get("data", [])
+
+            print(f"   + Server trả về: {len(data_list)} bản ghi cho từ khóa '{kw}'.")
+
+            for item in data_list:
+                code = str(item.get("bidNo") or item.get("notifyNo") or item.get("code") or item.get("id") or "")
+                title = str(item.get("bidName") or item.get("name") or item.get("title") or "")
+                investor = str(item.get("procuringEntityName") or item.get("investorName") or "")
                 
-                // Kích hoạt nút tìm kiếm gần ô input nhất
-                let btn = document.querySelector('button[class*="search"], .btn-search, i[class*="search"]');
-                if (btn) { btn.click(); }
-                return true;
-            }
-            return false;
-            """
-            success = driver.execute_script(js_fill_and_search, kw)
-            time.sleep(5)
+                # Deep scan text bao gồm chuỗi escape formValue
+                raw_str = json.dumps(item, ensure_ascii=False).lower()
+                form_val = item.get("formValue")
+                if form_val and isinstance(form_val, str):
+                    raw_str += " " + form_val.lower()
 
-            # Bóc tách dữ liệu render sau khi tìm kiếm thành công
-            js_extract = """
-            let items = [];
-            let rows = document.querySelectorAll('tr, div[class*="item"], div[class*="card"]');
-            rows.forEach(r => {
-                let txt = r.innerText || "";
-                if (txt.length > 30 && (txt.includes('TBMT') || txt.includes('Gói thầu') || txt.includes('202'))) {
-                    items.push(txt);
-                }
-            });
-            return items;
-            """
-            extracted_texts = driver.execute_script(js_extract)
-            
-            for txt in extracted_texts:
-                txt_clean = " ".join(txt.split())
-                if kw.lower() in txt_clean.lower():
-                    item_id = str(hash(txt_clean[:80]))
-                    if item_id not in unique_results:
-                        unique_results[item_id] = {
-                            "bidNo": f"TBMT-{item_id[:6]}",
-                            "bidName": txt_clean[:180],
+                if kw.lower() in raw_str:
+                    if code and code not in unique_matches:
+                        location = "Tiêu đề" if kw.lower() in f"{code} {title}".lower() else "Chi tiết Hàng hóa / Biểu mẫu 10B"
+                        unique_matches[code] = {
+                            "code": code,
+                            "title": title,
+                            "investor": investor,
                             "matched_kw": kw,
-                            "rawText": txt_clean
+                            "location": location,
+                            "snippet": raw_str[:1200]
                         }
-
-            print(f"   + Đã quét thành công từ khóa '{kw}'. Tích lũy: {len(unique_results)} bản ghi.")
+            time.sleep(1)
         except Exception as e:
-            print(f"[CẢNH BÁO TÌM KIẾM] Từ khóa '{kw}': {e}")
+            print(f"[CẢNH BÁO FETCH] Từ khóa '{kw}': {e}")
             continue
 
-    return list(unique_results.values())
+    return list(unique_matches.values())
 
-# 4. DEEP-SCAN DỮ LIỆU LỒNG NHAU FORMVALUE
-def extract_searchable_text(item):
-    try:
-        if "rawText" in item:
-            return item["rawText"].lower()
-        raw_str = json.dumps(item, ensure_ascii=False).lower()
-        form_val = item.get("formValue")
-        if form_val and isinstance(form_val, str):
-            raw_str += " " + form_val.lower()
-        return raw_str
-    except Exception:
-        return ""
-
-def pre_filter_candidates(raw_list):
-    candidates = []
-    unique_codes = set()
-    for item in raw_list:
-        code = str(item.get("bidNo") or "")
-        title = str(item.get("bidName") or "")
-        investor = str(item.get("procuringEntityName") or "Bên mời thầu Y tế")
-        full_text = extract_searchable_text(item)
-        
-        matched_kw = item.get("matched_kw") or [kw for kw in KEYWORDS if kw.lower() in full_text]
-        if isinstance(matched_kw, str):
-            matched_kw = [matched_kw]
-
-        if matched_kw and code not in unique_codes:
-            unique_codes.add(code)
-            location = "Tiêu đề / Chi tiết biểu mẫu hàng hóa"
-            candidates.append({
-                "code": code,
-                "title": title,
-                "investor": investor,
-                "matched_kw": matched_kw,
-                "location": location,
-                "snippet": full_text[:1200]
-            })
-    return candidates
-
-# 5. PHÂN TÍCH VỚI GEMINI AI
+# 4. PHÂN TÍCH VỚI GEMINI AI
 def analyze_with_gemini(candidates):
     if not candidates or not GEMINI_API_KEY:
         return candidates
@@ -165,13 +132,13 @@ Bạn là chuyên gia phân tích dữ liệu đấu thầu Y tế.
 Dưới đây là danh sách các Thông báo mời thầu (TBMT) đã khớp từ khóa y tế.
 
 Yêu cầu:
-1. Giữ nguyên toàn bộ gói thầu trong danh sách.
+1. Giữ nguyên toàn bộ các gói thầu trong danh sách đầu vào.
 2. Viết 1 câu tóm tắt ngắn gọn lý do phù hợp hoặc mặt hàng chính trong gói thầu.
 3. Trả về đúng mảng JSON chứa các object: "code", "title", "investor", "matched_kw", "location", "reason".
 
 Danh sách:
 {json.dumps(candidates, ensure_ascii=False, indent=2)}
-Chỉ trả về chuỗi JSON thuần túy.
+Chỉ trả về chuỗi JSON thuần túy (không kèm markdown).
 """
         response = client.models.generate_content(
             model="gemini-2.5-flash",
@@ -186,7 +153,7 @@ Chỉ trả về chuỗi JSON thuần túy.
         print(f"[THÔNG BÁO AI] {e}")
         return candidates
 
-# 6. GỬI BÁO CÁO EMAIL
+# 5. GỬI EMAIL BÁO CÁO
 def send_email_report(matched_list, raw_count):
     if not RECEIVER_EMAIL:
         print("[LỖI CẤU HÌNH] Chưa khai báo email nhận.")
@@ -196,7 +163,7 @@ def send_email_report(matched_list, raw_count):
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h3>
-            <p>Hệ thống đã kết nối và quét dữ liệu giao diện Mua Sắm Công nhưng chưa phát hiện gói thầu mới khớp 14 từ khóa theo dõi.</p>
+            <p>Hệ thống đã truy vấn thành công dữ liệu nhưng chưa phát hiện gói thầu mới khớp 14 từ khóa theo dõi.</p>
         </div>
         """
     else:
@@ -227,7 +194,7 @@ def send_email_report(matched_list, raw_count):
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h2 style="color: #0275d8;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h2>
-            <p>Đã tương tác quét giao diện Mua Sắm Công và bóc tách phát hiện <b>{len(matched_list)}</b> gói thầu phù hợp:</p>
+            <p>Đã quét dữ liệu Mua Sắm Công và phát hiện <b>{len(matched_list)}</b> gói thầu phù hợp:</p>
             <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; border-color: #ddd;">
                 <tr style="background-color: #fff2e6;">
                     <th align="center">STT</th>
@@ -259,13 +226,12 @@ def send_email_report(matched_list, raw_count):
             print(f"[LỖI GỬI EMAIL SMTP] {e}")
 
 def main():
-    print(f"=== CRAWL & BÓC TÁCH SÂU TBMT SELENIUM SEARCH - NGÀY {TODAY_STR} ===")
+    print(f"=== CRAWL & BÓC TÁCH SÂU TBMT SELENIUM SMART SEARCH - NGÀY {TODAY_STR} ===")
     driver = init_driver()
     try:
-        raw_list = fetch_tbmt_by_searching_keywords(driver)
-        candidates = pre_filter_candidates(raw_list)
-        final_matches = analyze_with_gemini(candidates)
-        send_email_report(final_matches, len(raw_list))
+        matched_list = fetch_tbmt_by_smart_search(driver)
+        final_matches = analyze_with_gemini(matched_list)
+        send_email_report(final_matches, len(matched_list))
     finally:
         driver.quit()
 
