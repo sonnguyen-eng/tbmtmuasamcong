@@ -64,15 +64,19 @@ def is_published_strictly_today(item):
     except Exception:
         return True
 
-# 5. HÀM ĐỊNH DẠNG GIÁ TRỊ GÓI THẦU (VND)
+# 5. HÀM ĐỊNH DẠNG GIÁ TRỊ GÓI THẦU SỐ THUẦN TÚY (VD: 110,440,000.00)
 def format_currency(val):
     if not val:
-        return "Chưa cập nhật"
+        return "0.00"
     try:
+        # Nếu dữ liệu trả về nằm trong list
+        if isinstance(val, list) and len(val) > 0:
+            val = val[0]
+            
         num = float(val)
         if num == 0:
-            return "Chưa cập nhật"
-        return f"{num:,.0f} VND".replace(",", ".")
+            return "0.00"
+        return f"{num:,.2f}" # Định dạng chuẩn 110,440,000.00
     except Exception:
         return str(val)
 
@@ -140,7 +144,7 @@ def get_hsmt_form_values(driver, notify_no, notify_version="00", bid_field="HH")
         pass
     return ""
 
-# 8. TRÍCH XUẤT THÔNG TIN TBMT ĐĂNG TRONG NGÀY VÀ LẤY GIÁ TRỊ GÓI THẦU
+# 8. TRÍCH XUẤT THÔNG TIN TBMT ĐĂNG TRONG NGÀY
 def fetch_tbmt_today(driver):
     print(f"-> Đang mở trình duyệt và khởi tạo Session Mua Sắm Công (Ngày {TODAY_STR})...")
     driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
@@ -240,7 +244,7 @@ def fetch_tbmt_today(driver):
                     
                 investor = str(item.get("investorName") or item.get("procuringEntityName") or "")
                 
-                # Bóc tách Dự toán / Giá gói thầu
+                # Bóc tách Dự toán / Giá gói thầu & Định dạng chuẩn số
                 est_amount_raw = item.get("estAmount") or item.get("investTotal") or item.get("bidPrice")
                 formatted_amount = format_currency(est_amount_raw)
 
@@ -261,6 +265,7 @@ def fetch_tbmt_today(driver):
                             location_detail = "Tiêu đề" if any(k.lower() in f"{code} {title}".lower() for k in matched_kws) else "Chi tiết Hàng hóa / Biểu mẫu 10B"
                             unique_matches[code] = {
                                 "code": code,
+                                "notify_ver": notify_ver,
                                 "title": title,
                                 "amount": formatted_amount,
                                 "investor": investor,
@@ -295,7 +300,7 @@ Dưới đây là danh sách các Thông báo mời thầu (TBMT) phát hành tr
 Yêu cầu:
 1. Giữ nguyên toàn bộ các gói thầu trong danh sách đầu vào.
 2. Viết 1 câu tóm tắt ngắn gọn lý do phù hợp hoặc mặt hàng chính trong gói thầu.
-3. Trả về đúng mảng JSON chứa các object: "code", "title", "amount", "investor", "province", "matched_kw", "location", "reason".
+3. Trả về đúng mảng JSON chứa các object: "code", "notify_ver", "title", "amount", "investor", "province", "matched_kw", "location", "reason".
 
 Danh sách:
 {json.dumps(candidates, ensure_ascii=False, indent=2)}
@@ -325,7 +330,7 @@ Chỉ trả về chuỗi JSON thuần túy (không kèm markdown).
         print(f"[THÔNG BÁO AI] {e}")
         return candidates
 
-# 10. GỬI EMAIL BÁO CÁO (CÓ CỘT GIÁ TRỊ GÓI THẦU)
+# 10. GỬI EMAIL BÁO CÁO (ĐƯỜNG LINK CHUẨN V2 & GIÁ TRỊ DẠNG SỐ)
 def send_email_report(matched_list):
     if not RECEIVER_EMAIL:
         print("[LỖI CẤU HÌNH] Chưa khai báo email nhận.")
@@ -342,15 +347,18 @@ def send_email_report(matched_list):
         rows = ""
         for idx, item in enumerate(matched_list, 1):
             code = item.get("code", "")
+            notify_ver = item.get("notify_ver", "00")
             title = item.get("title", "")
-            amount = item.get("amount", "Chưa cập nhật")
+            amount = item.get("amount", "0.00")
             investor = item.get("investor", "")
             province = item.get("province", "Theo dõi")
             location = item.get("location", "Biểu mẫu / Hàng hóa")
             reason = item.get("reason") or "Khớp từ khóa theo dõi y tế trong Biểu mẫu 10B/HSMT"
             matched_kw = item.get("matched_kw", "")
                 
-            link = f"https://{BASE_DOMAIN}/vi/web/guest/initiator?tbmtNo={code}"
+            # ĐƯỜNG LINK CHUẨN ĐẾN TRANG CHI TIẾT TBMT MUA SẮM CÔNG V2
+            link = f"https://{BASE_DOMAIN}/web/guest/contractor-selection?p_p_id=egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view&_egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2_render=detail&notifyNo={code}&notifyVersion={notify_ver}"
+            
             rows += f"""
             <tr>
                 <td align="center">{idx}</td>
@@ -375,7 +383,7 @@ def send_email_report(matched_list):
                     <th align="center">STT</th>
                     <th>Mã TBMT</th>
                     <th>Tên Gói Thầu</th>
-                    <th align="right">Giá Trị Gói Thầu</th>
+                    <th align="right">Giá Trị Gói Thầu (VND)</th>
                     <th>Bên Mời Thầu</th>
                     <th align="center">Tỉnh / TP</th>
                     <th align="center">Từ Khóa Khớp</th>
