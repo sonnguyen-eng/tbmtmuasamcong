@@ -1,6 +1,7 @@
 import os
 import time
 import smtplib
+import json
 import requests
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
@@ -12,15 +13,15 @@ SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
 RECEIVER_EMAIL = SENDER_EMAIL
 
 KEYWORDS = [
-    "nội soi", "nội soi tiêu hóa", "nội soi khí phế quản", 
-    "Bàn mổ", "đèn mổ", "hệ thống khí y tế", "vận chuyển mẫu", "ERCP"
+    "nội soi", "nội soi tiêu hóa", "nội soi khí phế quản", "Bàn mổ", "đèn mổ", "hệ thống khí y tế", "vận chuyển mẫu", "ERCP", "Monitor theo dõi bệnh nhân", "Máy hấp tiệt trùng", "Nhiệt độ thấp", "máy gây mê giúp thở", "Bơm tiêm điện", "máy truyền dịch"
 ]
 EXCLUDE_KEYWORD = "ống soi"
 
 TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
-# 2. API TBMT khớp 100% Payload F12
+
+# 2. Truy vấn API TBMT theo F12 chuẩn
 def fetch_tbmt_api():
     url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/popular-keyword/get-list"
     headers = {
@@ -32,7 +33,6 @@ def fetch_tbmt_api():
     }
     
     collected_items = []
-    # Quét 4 trang đầu tiên (200 TBMT mới nhất)
     for page in range(4):
         payload = {
             "pageSize": 50,
@@ -60,8 +60,17 @@ def fetch_tbmt_api():
 
     return collected_items
 
+
+# 3. Hàm trích xuất TOÀN BỘ văn bản bao gồm dữ liệu hàng hóa chi tiết
+def extract_full_searchable_text(item):
+    try:
+        return json.dumps(item, ensure_ascii=False).lower()
+    except Exception:
+        return ""
+
+
 def main_tbmt():
-    print(f"=== BẮT ĐẦU QUÉT TBMT - NGÀY {TODAY_STR} ===")
+    print(f"=== BẮT ĐẦU QUÉT TBMT SÂU DANH MỤC HÀNG HÓA - NGÀY {TODAY_STR} ===")
     raw_list = fetch_tbmt_api()
     print(f"-> Thu thập thô từ server: {len(raw_list)} TBMT.")
     
@@ -71,52 +80,67 @@ def main_tbmt():
         title = str(item.get("bidName") or item.get("name") or item.get("title") or "")
         investor = str(item.get("procuringEntityName") or item.get("investorName") or "")
         
-        full_text = f"{code} {title} {investor}".lower()
+        full_searchable_text = extract_full_searchable_text(item)
         
-        # Bỏ qua nếu chứa "ống soi"
-        if EXCLUDE_KEYWORD.lower() in full_text:
+        # 1. Loại trừ "ống soi"
+        if EXCLUDE_KEYWORD.lower() in full_searchable_text:
             continue
             
-        # Lọc theo danh mục từ khóa
+        # 2. Quét từ khóa trong toàn bộ dữ liệu chi tiết
         for kw in KEYWORDS:
-            if kw.lower() in full_text:
+            if kw.lower() in full_searchable_text:
                 if code and code not in unique_matches:
+                    matched_location = "Tiêu đề" if kw.lower() in f"{code} {title}".lower() else "Chi tiết Hàng hóa"
                     unique_matches[code] = {
                         "code": code,
                         "title": title,
                         "investor": investor,
-                        "matched_kw": kw
+                        "matched_kw": kw,
+                        "location": matched_location
                     }
                 break
 
     matched_list = list(unique_matches.values())
-    print(f"-> Số TBMT khớp từ khóa: {len(matched_list)} gói.")
+    print(f"-> Khớp từ khóa (bao gồm danh mục hàng hóa): {len(matched_list)} gói TBMT.")
 
     # Render HTML Báo cáo
     if not matched_list:
-        html_body = f"<h3>BÁO CÁO TBMT NGÀY {TODAY_STR}</h3><p>Hệ thống kết nối thành công nhưng không tìm thấy TBMT nào khớp từ khóa theo dõi.</p>"
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; padding: 20px;">
+            <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h3>
+            <p>Hệ thống kết nối thành công nhưng không tìm thấy từ khóa theo dõi trong tiêu đề hoặc danh mục hàng hóa chi tiết.</p>
+        </div>
+        """
     else:
         html_body = f"""
-        <h2>BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h2>
-        <p>Phát hiện <b>{len(matched_list)}</b> TBMT phù hợp:</p>
-        <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%;">
-            <tr style="background-color: #fff2e6;">
-                <th>STT</th><th>Mã TBMT</th><th>Tên Gói Thầu</th><th>Bên Mời Thầu</th><th>Từ Khóa</th><th>Chi Tiết</th>
-            </tr>
+        <div style="font-family: Arial, sans-serif; padding: 20px;">
+            <h2 style="color: #0275d8;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h2>
+            <p>Phát hiện <b>{len(matched_list)}</b> TBMT phù hợp danh mục theo dõi (đã quét sâu danh mục mặt hàng):</p>
+            <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%;">
+                <tr style="background-color: #fff2e6;">
+                    <th align="center">STT</th>
+                    <th>Mã TBMT</th>
+                    <th>Tên Gói Thầu</th>
+                    <th>Bên Mời Thầu</th>
+                    <th align="center">Từ Khóa</th>
+                    <th align="center">Vị Trí Khớp</th>
+                    <th align="center">Chi Tiết</th>
+                </tr>
         """
         for idx, item in enumerate(matched_list, 1):
             link = f"https://muasamcong.mof.gov.vn/vi/web/guest/initiator?tbmtNo={item['code']}"
             html_body += f"""
-            <tr>
-                <td align="center">{idx}</td>
-                <td><b>{item['code']}</b></td>
-                <td>{item['title']}</td>
-                <td>{item['investor']}</td>
-                <td align="center">{item['matched_kw']}</td>
-                <td align="center"><a href="{link}" target="_blank">Xem chi tiết</a></td>
-            </tr>
+                <tr>
+                    <td align="center">{idx}</td>
+                    <td><b>{item['code']}</b></td>
+                    <td>{item['title']}</td>
+                    <td>{item['investor']}</td>
+                    <td align="center"><span style="background-color: #ffffcc;">{item['matched_kw']}</span></td>
+                    <td align="center"><i>{item['location']}</i></td>
+                    <td align="center"><a href="{link}" target="_blank">Xem chi tiết</a></td>
+                </tr>
             """
-        html_body += "</table>"
+        html_body += "</table></div>"
 
     # Gửi Email
     if SENDER_EMAIL and SENDER_PASSWORD:
@@ -129,9 +153,10 @@ def main_tbmt():
             with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
                 server.login(SENDER_EMAIL, SENDER_PASSWORD)
                 server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, msg.as_string())
-            print("[SUCCESS] Đã gửi Email TBMT thành công!")
+            print(f"[SUCCESS] Đã gửi báo cáo TBMT thành công tới {RECEIVER_EMAIL}!")
         except Exception as e:
-            print(f"[LỖI EMAIL] {e}")
+            print(f"[LỖI GỬI EMAIL] {e}")
+
 
 if __name__ == "__main__":
     main_tbmt()
