@@ -15,7 +15,8 @@ from webdriver_manager.chrome import ChromeDriverManager
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
-RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", SENDER_EMAIL).strip()
+# Nếu RECEIVER_EMAIL bị rỗng trên GitHub Secrets, tự động lấy SENDER_EMAIL làm email nhận
+RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", "").strip() or SENDER_EMAIL
 
 KEYWORDS = [
     "nội soi", "nội soi tiêu hóa", "nội soi khí phế quản",
@@ -28,7 +29,7 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 BASE_DOMAIN = "muasamcong.mof.gov.vn"
 
-# 2. KHỞI TẠO TRÌNH DUYỆT CHROME HEADLESS
+# 2. KHỞI TẠO CHROME HEADLESS
 def init_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
@@ -41,11 +42,12 @@ def init_driver():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     return driver
 
-# 3. LẤY DỮ LIỆU BẰNG FETCH TRONG TRÌNH DUYỆT THẬT (KHÔNG THỂ BỊ HTTP 500)
+# 3. TRUY VẤN DỮ LIỆU TỪ NỔI TRÌNH DUYỆT THẬT
 def fetch_tbmt_with_browser(driver, max_pages=5):
     print("-> Đang mở trình duyệt và kết nối Mua Sắm Công...")
     driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
-    time.sleep(5) # Chờ Liferay load xong session & token
+    # Chờ 8 giây để trang khởi tạo xong Session và Cookie Liferay
+    time.sleep(8)
 
     collected_items = []
 
@@ -104,7 +106,7 @@ def fetch_tbmt_with_browser(driver, max_pages=5):
 
     return collected_items
 
-# 4. DEEP-SCAN JSON & FORMVALUE
+# 4. DEEP-SCAN DỮ LIỆU LỒNG NHAU FORMVALUE
 def extract_searchable_text(item):
     try:
         raw_str = json.dumps(item, ensure_ascii=False).lower()
@@ -138,7 +140,7 @@ def pre_filter_candidates(raw_list):
             })
     return candidates
 
-# 5. PHÂN TÍCH TÓM TẮT VỚI GEMINI AI
+# 5. PHÂN TÍCH VỚI GEMINI AI
 def analyze_with_gemini(candidates):
     if not candidates or not GEMINI_API_KEY:
         return candidates
@@ -173,8 +175,12 @@ Chỉ trả về chuỗi JSON thuần túy.
         print(f"[THÔNG BÁO AI] {e}")
         return candidates
 
-# 6. GỬI EMAIL BÁO CÁO
+# 6. GỬI EMAIL THÔNG BÁO SỬA LỖI EMAIL RÕNG
 def send_email_report(matched_list, raw_count):
+    if not RECEIVER_EMAIL:
+        print("[LỖI CẤU HÌNH] Chưa khai báo email nhận (RECEIVER_EMAIL / SENDER_EMAIL rỗng).")
+        return
+
     if not matched_list:
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
@@ -237,9 +243,11 @@ def send_email_report(matched_list, raw_count):
             with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
                 server.login(SENDER_EMAIL, SENDER_PASSWORD)
                 server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, msg.as_string())
-            print(f"[SUCCESS] Đã gửi báo cáo TBMT thành công tới {RECEIVER_EMAIL}!")
+            print(f"[SUCCESS] Đã gửi báo cáo TBMT thành công tới email: {RECEIVER_EMAIL}!")
         except Exception as e:
             print(f"[LỖI GỬI EMAIL SMTP] {e}")
+    else:
+        print("[CẢNH BÁO] Khuyết SENDER_EMAIL hoặc SENDER_PASSWORD.")
 
 def main():
     print(f"=== CRAWL & BÓC TÁCH SÂU TBMT BẰNG SELENIUM - NGÀY {TODAY_STR} ===")
