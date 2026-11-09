@@ -38,8 +38,8 @@ KEYWORDS = [
 TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
-def fetch_tbmt_list_raw(session):
-    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/lcnt_tbmcgtt_hsmt"
+def fetch_tbmt_by_keyword(session, keyword):
+    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/smart/search"
     
     headers = {
         "Accept": "application/json, text/plain, */*",
@@ -49,44 +49,57 @@ def fetch_tbmt_list_raw(session):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
     
-    collected_items = []
-    
-    for page in range(10):
-        # Payload chuẩn chống lỗi HTTP 500 trên endpoint public
-        payload = {
-            "pageSize": 50,
-            "pageNumber": page,
-            "sort": "createdDate desc"
-        }
+    items_found = []
+    kw_str = str(keyword).strip()
+
+    # Quét 2 trang cho mỗi từ khóa (100 gói thầu/từ khóa)
+    for page in range(2):
+        payload = [
+            {
+                "pageSize": 50,
+                "pageNumber": str(page),
+                "query": [
+                    {
+                        "index": "es-contractor-selection",
+                        "keyWord": kw_str,
+                        "matchType": "all-1",
+                        "matchFields": ["notifyNo", "bidName"],
+                        "filters": [
+                            {
+                                "fieldName": "type",
+                                "searchType": "in",
+                                "fieldValues": ["es-notify-contractor"]
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
         try:
             res = session.post(url, json=payload, headers=headers, timeout=25, verify=False)
             if res.status_code == 200:
                 data = res.json()
                 data_list = []
-                if isinstance(data, dict):
-                    data_list = data.get("result", {}).get("data", [])
-                    if not data_list and isinstance(data.get("result"), list):
-                        data_list = data.get("result", [])
-                elif isinstance(data, list) and len(data) > 0:
+                if isinstance(data, list) and len(data) > 0:
                     data_list = data[0].get("result", {}).get("data", [])
+                elif isinstance(data, dict):
+                    data_list = data.get("result", {}).get("data", [])
 
                 if not data_list:
-                    print(f"-> Dừng phân trang tại trang {page}: Không có dữ liệu mới.")
                     break
                 
-                collected_items.extend(data_list)
-                print(f"   + Lấy thành công trang {page + 1}: thêm {len(data_list)} TBMT (Tích lũy: {len(collected_items)} bản ghi).")
+                items_found.extend(data_list)
                 if len(data_list) < 50:
                     break
             else:
-                print(f"[CẢNH BÁO MẠNG HTTP {res.status_code}] Trang {page}")
-                continue
+                print(f"[HTTP {res.status_code}] Từ khóa '{keyword}' trang {page}")
+                break
             time.sleep(0.3)
         except Exception as e:
-            print(f"[LỖI TRUY VẤN MẠNG] Trang {page}: {e}")
-            continue
+            print(f"[LỖI API] Từ khóa '{keyword}' trang {page}: {e}")
+            break
 
-    return collected_items
+    return items_found
 
 def extract_full_searchable_text(item):
     try:
@@ -104,23 +117,27 @@ def main_tbmt():
     session = requests.Session()
     session.mount("https://", CustomSSLAdapter())
     
+    # Khởi tạo cookie phiên làm việc
     try:
         session.get("https://muasamcong.mof.gov.vn/web/guest/contractor-selection?render=index", timeout=15, verify=False)
     except Exception:
         pass
 
-    print("-> Đang tải danh sách TBMT tổng thể...")
-    raw_list = fetch_tbmt_list_raw(session)
-    print(f"-> Thu thập thành công tổng cộng: {len(raw_list)} bản ghi thô từ máy chủ.")
-    
     unique_matches = {}
-    for item in raw_list:
-        code = str(item.get("bidNo") or item.get("notifyNo") or item.get("code") or item.get("id") or "")
-        title = str(item.get("bidName") or item.get("name") or item.get("title") or "")
-        investor = str(item.get("procuringEntityName") or item.get("investorName") or "")
-        full_text = extract_full_searchable_text(item)
-        
-        for kw in KEYWORDS:
+    total_raw_scanned = 0
+
+    for kw in KEYWORDS:
+        print(f"-> Truy vấn API Smart Search cho từ khóa: '{kw}'...")
+        raw_items = fetch_tbmt_by_keyword(session, kw)
+        total_raw_scanned += len(raw_items)
+        print(f"   + Server trả về: {len(raw_items)} bản ghi.")
+
+        for item in raw_items:
+            code = str(item.get("bidNo") or item.get("notifyNo") or item.get("code") or item.get("id") or "")
+            title = str(item.get("bidName") or item.get("name") or item.get("title") or "")
+            investor = str(item.get("procuringEntityName") or item.get("investorName") or "")
+            full_text = extract_full_searchable_text(item)
+            
             if kw.lower() in full_text:
                 if code and code not in unique_matches:
                     location = "Tiêu đề" if kw.lower() in f"{code} {title}".lower() else "Chi tiết Hàng hóa / Biểu mẫu 10B"
@@ -134,6 +151,7 @@ def main_tbmt():
 
     matched_list = list(unique_matches.values())
     print(f"==================================================")
+    print(f"-> Tổng số bản ghi thô quét được: {total_raw_scanned}")
     print(f"-> Số gói TBMT độc bản khớp danh mục 14 từ khóa: {len(matched_list)}")
     print(f"==================================================")
 
@@ -141,7 +159,7 @@ def main_tbmt():
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h3>
-            <p>Hệ thống đã thu thập {len(raw_list)} bản ghi nhưng chưa phát hiện TBMT nào khớp danh mục 14 từ khóa theo dõi.</p>
+            <p>Hệ thống đã kết nối thành công tới server Mua Sắm Công nhưng chưa tìm thấy TBMT nào phù hợp với danh mục 14 từ khóa theo dõi.</p>
         </div>
         """
     else:
