@@ -25,7 +25,7 @@ class CustomSSLAdapter(HTTPAdapter):
         kwargs['ssl_context'] = ctx
         return super().init_poolmanager(*args, **kwargs)
 
-# 2. CẤU HÌNH CÁC TỪ KHÓA NGUYÊN BẢN (14 TỪ KHÓA)
+# 2. CẤU HÌNH EMAIL & 14 TỪ KHÓA
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
 RECEIVER_EMAIL = SENDER_EMAIL
@@ -40,7 +40,7 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
 
-# 3. TRUY VẤN API TBMT THEO TỪNG TỪ KHÓA
+# 3. TRUY VẤN API TBMT VỚI PAYLOAD F12 CHUẨN XÁC
 def fetch_tbmt_by_keyword(session, keyword):
     url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/popular-keyword/get-list"
     headers = {
@@ -52,14 +52,17 @@ def fetch_tbmt_by_keyword(session, keyword):
     }
     
     items_found = []
-    # Quét 5 trang đầu cho mỗi từ khóa (tương đương 250 kết quả/từ khóa)
+    # Quét 5 trang đầu tiên cho mỗi từ khóa (250 gói/từ khóa)
     for page in range(5):
+        # Payload đóng gói đúng chuẩn F12 từ tài liệu của anh
         payload = {
             "pageSize": 50,
-            "pageNumber": page,
-            "keySearch": keyword.strip(),
+            "pageNumber": str(page),
             "query": [
-                {"index": "popular-keyword", "keySearch": keyword.strip()}
+                {
+                    "index": "popular-keyword",
+                    "keySearch": str(keyword).strip()
+                }
             ]
         }
         try:
@@ -85,7 +88,7 @@ def fetch_tbmt_by_keyword(session, keyword):
     return items_found
 
 
-# 4. HÀM TRÍCH XUẤT VĂN BẢN QUÉT SÂU CHI TIẾT
+# 4. TRÍCH XUẤT VĂN BẢN QUÉT SÂU DANH MỤC HÀNG HÓA
 def extract_full_searchable_text(item):
     try:
         return json.dumps(item, ensure_ascii=False).lower()
@@ -104,7 +107,7 @@ def main_tbmt():
     total_raw_scanned = 0
 
     for kw in KEYWORDS:
-        print(f"-> Đang quét từ khóa: '{kw}'...")
+        print(f"-> Đang truy vấn từ khóa chuẩn F12: '{kw}'...")
         raw_items = fetch_tbmt_by_keyword(session, kw)
         total_raw_scanned += len(raw_items)
         print(f"   + Tìm thấy: {len(raw_items)} bản ghi.")
@@ -116,7 +119,7 @@ def main_tbmt():
             
             full_searchable_text = extract_full_searchable_text(item)
             
-            # 1. Bỏ qua nếu chứa từ khóa loại trừ "ống soi"
+            # 1. Bỏ qua nếu có từ khóa loại trừ "ống soi"
             if EXCLUDE_KEYWORD.lower() in full_searchable_text:
                 continue
                 
