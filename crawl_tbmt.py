@@ -112,7 +112,6 @@ def fetch_tbmt_by_smart_search_curl(driver):
             res = driver.execute_async_script(js_fetch_search, kw, token_val)
             data_list = []
             
-            # Trích xuất chính xác từ thuộc tính page.content
             if isinstance(res, list) and len(res) > 0:
                 first_item = res[0]
                 if isinstance(first_item, dict):
@@ -131,7 +130,6 @@ def fetch_tbmt_by_smart_search_curl(driver):
                     
                 code = str(item.get("notifyNo") or item.get("notifyNoStand") or item.get("bidNo") or item.get("id") or "")
                 
-                # Sửa xử lý bidName là mảng chuỗi
                 bid_name_raw = item.get("bidName")
                 if isinstance(bid_name_raw, list) and len(bid_name_raw) > 0:
                     title = str(bid_name_raw[0])
@@ -164,11 +162,14 @@ def fetch_tbmt_by_smart_search_curl(driver):
 
     return list(unique_matches.values())
 
-# 4. PHÂN TÍCH VỚI GEMINI AI
+# 4. PHÂN TÍCH VỚI GEMINI AI (ĐÃ CẬP NHẬT MODEL GEMINI-2.0-FLASH CHUẨN)
 def analyze_with_gemini(candidates):
     if not candidates or not GEMINI_API_KEY:
         return candidates
 
+    # Thử danh sách model cập nhật hỗ trợ mới nhất
+    target_models = ["gemini-2.0-flash", "gemini-1.5-flash"]
+    
     try:
         from google import genai
         client = genai.Client(api_key=GEMINI_API_KEY)
@@ -186,11 +187,22 @@ Danh sách:
 {json.dumps(candidates, ensure_ascii=False, indent=2)}
 Chỉ trả về chuỗi JSON thuần túy (không kèm markdown).
 """
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
-        )
-        content = response.text.strip()
+        content = None
+        for model_name in target_models:
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt
+                )
+                content = response.text.strip()
+                if content:
+                    break
+            except Exception as inner_e:
+                continue
+
+        if not content:
+            return candidates
+
         if content.startswith("```json"): content = content[7:]
         if content.startswith("```"): content = content[3:]
         if content.endswith("```"): content = content[:-3]
