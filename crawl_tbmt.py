@@ -52,14 +52,16 @@ def fetch_tbmt_list_raw(session):
     collected_items = []
     
     for page in range(10):
-        # API /lcnt_tbmcgtt_hsmt yêu cầu pageNumber kiểu INT (số nguyên)
+        # Đã bổ sung keySearch để không bị lỗi HTTP 500 từ backend ElasticSearch
         payload = {
             "pageSize": 50,
             "pageNumber": page,
             "sort": "createdDate desc",
+            "keySearch": "",
             "query": [
                 {
                     "index": "es-contractor-selection",
+                    "keySearch": "",
                     "filters": [
                         {
                             "fieldName": "type",
