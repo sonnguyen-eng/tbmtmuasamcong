@@ -32,7 +32,7 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 BASE_DOMAIN = "muasamcong.mof.gov.vn"
 
-# 2. KHỞI TẠO TRÌNH DUYỆT CHROME HEADLESS
+# 2. KHỞI TẠO CHROME HEADLESS CHỐNG LỖI INTERACTABLE
 def init_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
@@ -45,31 +45,41 @@ def init_driver():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     return driver
 
-# 3. THAO TÁC NHẬP TỪ KHÓA TRÊN GIAO DIỆN MUA SẮM CÔNG BẰNG SELENIUM
+# 3. TƯƠNG TÁC JS TRÁNH LỖI ELEMENT NOT INTERACTABLE
 def fetch_tbmt_by_searching_keywords(driver):
     print("-> Đang mở trình duyệt Mua Sắm Công...")
     driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
-    time.sleep(6)
+    time.sleep(8)
 
     unique_results = {}
+    wait = WebDriverWait(driver, 10)
 
     for kw in KEYWORDS:
         print(f"-> Đang tìm kiếm giao diện cho từ khóa: '{kw}'...")
         try:
-            # Tìm ô input tìm kiếm trên trang Mua Sắm Công
-            search_inputs = driver.find_elements(By.XPATH, "//input[@type='text' or contains(@placeholder, 'Tìm') or contains(@class, 'search')]")
-            if search_inputs:
-                inp = search_inputs[0]
-                inp.send_keys(Keys.CONTROL + "a")
-                inp.send_keys(Keys.BACKSPACE)
-                inp.send_keys(kw)
-                inp.send_keys(Keys.ENTER)
-                time.sleep(4)
-            else:
-                # Nếu không tìm thấy ID input cụ thể, kích hoạt nút tìm kiếm chung
-                driver.execute_script(f"console.log('Search kw: {kw}');")
+            # Dùng JS tìm ô input hiển thị công khai thực sự trên trang
+            js_fill_and_search = """
+            let kw = arguments[0];
+            let inputs = Array.from(document.querySelectorAll('input[type="text"], input[placeholder*="Tìm"], input[class*="search"]'));
+            let visibleInput = inputs.find(i => i.offsetWidth > 0 && i.offsetHeight > 0) || inputs[0];
+            
+            if (visibleInput) {
+                visibleInput.focus();
+                visibleInput.value = kw;
+                visibleInput.dispatchEvent(new Event('input', { bubbles: true }));
+                visibleInput.dispatchEvent(new Event('change', { bubbles: true }));
+                
+                // Kích hoạt nút tìm kiếm gần ô input nhất
+                let btn = document.querySelector('button[class*="search"], .btn-search, i[class*="search"]');
+                if (btn) { btn.click(); }
+                return true;
+            }
+            return false;
+            """
+            success = driver.execute_script(js_fill_and_search, kw)
+            time.sleep(5)
 
-            # Bóc tách dữ liệu thẻ kết quả sau khi tìm kiếm
+            # Bóc tách dữ liệu render sau khi tìm kiếm thành công
             js_extract = """
             let items = [];
             let rows = document.querySelectorAll('tr, div[class*="item"], div[class*="card"]');
@@ -86,7 +96,6 @@ def fetch_tbmt_by_searching_keywords(driver):
             for txt in extracted_texts:
                 txt_clean = " ".join(txt.split())
                 if kw.lower() in txt_clean.lower():
-                    # Tạo mã định danh ngắn cho bản ghi
                     item_id = str(hash(txt_clean[:80]))
                     if item_id not in unique_results:
                         unique_results[item_id] = {
@@ -96,9 +105,9 @@ def fetch_tbmt_by_searching_keywords(driver):
                             "rawText": txt_clean
                         }
 
-            print(f"   + Tìm thấy {len(unique_results)} bản ghi phù hợp tích lũy.")
+            print(f"   + Đã quét thành công từ khóa '{kw}'. Tích lũy: {len(unique_results)} bản ghi.")
         except Exception as e:
-            print(f"[LỖI TÌM KIẾM GIAO DIỆN] Từ khóa '{kw}': {e}")
+            print(f"[CẢNH BÁO TÌM KIẾM] Từ khóa '{kw}': {e}")
             continue
 
     return list(unique_results.values())
@@ -177,7 +186,7 @@ Chỉ trả về chuỗi JSON thuần túy.
         print(f"[THÔNG BÁO AI] {e}")
         return candidates
 
-# 6. GỬI EMAIL BÁO CÁO
+# 6. GỬI BÁO CÁO EMAIL
 def send_email_report(matched_list, raw_count):
     if not RECEIVER_EMAIL:
         print("[LỖI CẤU HÌNH] Chưa khai báo email nhận.")
