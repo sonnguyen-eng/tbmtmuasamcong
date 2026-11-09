@@ -7,22 +7,23 @@ from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-# 1. Cấu hình Email & Từ khóa
+# 1. Cấu hình Email & Danh mục 14 từ khóa
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
 RECEIVER_EMAIL = SENDER_EMAIL
 
 KEYWORDS = [
-    "nội soi", "nội soi tiêu hóa", "nội soi khí phế quản", "Bàn mổ", "đèn mổ", "hệ thống khí y tế", "vận chuyển mẫu", "ERCP", "Monitor theo dõi bệnh nhân", "Máy hấp tiệt trùng", "Nhiệt độ thấp", "máy gây mê giúp thở", "Bơm tiêm điện", "máy truyền dịch"
+    "nội soi", "nội soi tiêu hóa", "nội soi khí phế quản", 
+    "Bàn mổ", "đèn mổ", "hệ thống khí y tế", "vận chuyển mẫu", "ERCP",
+    "Monitor theo dõi bệnh nhân", "Máy hấp tiệt trùng", "Nhiệt độ thấp", 
+    "máy gây mê giúp thở", "Bơm tiêm điện", "máy truyền dịch"
 ]
-EXCLUDE_KEYWORD = "ống soi"
-
 TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
 
-# 2. Truy vấn API TBMT theo F12 chuẩn
-def fetch_tbmt_api():
+# 2. Truy vấn API TBMT quét TOÀN BỘ các trang (Quét sạch 100%)
+def fetch_all_tbmt_api():
     url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/popular-keyword/get-list"
     headers = {
         "Accept": "application/json, text/plain, */*",
@@ -33,7 +34,10 @@ def fetch_tbmt_api():
     }
     
     collected_items = []
-    for page in range(4):
+    page = 0
+    max_pages = 50  # Giới hạn tối đa 50 trang (tương đương 2.500 TBMT mới nhất)
+
+    while page < max_pages:
         payload = {
             "pageSize": 50,
             "pageNumber": page,
@@ -51,17 +55,28 @@ def fetch_tbmt_api():
                     items = data.get("result", [])
 
                 if not items:
+                    print(f"-> Đã quét hết dữ liệu TBMT ở trang {page}.")
                     break
+
                 collected_items.extend(items)
-            time.sleep(0.3)
+                print(f"   + Lấy thành công trang {page + 1}: thêm {len(items)} TBMT (Tổng tích lũy: {len(collected_items)})")
+
+                if len(items) < 50:
+                    break
+
+                page += 1
+                time.sleep(0.3)
+            else:
+                print(f"[CẢNH BÁO TBMT API] Mã lỗi HTTP {res.status_code} tại trang {page}")
+                break
         except Exception as e:
-            print(f"[CẢNH BÁO TBMT API] Trang {page}: {e}")
+            print(f"[LỖI TBMT API] Trang {page}: {e}")
             break
 
     return collected_items
 
 
-# 3. Hàm trích xuất TOÀN BỘ văn bản bao gồm dữ liệu hàng hóa chi tiết
+# 3. Trích xuất toàn bộ văn bản JSON (Search sâu danh mục hàng hóa)
 def extract_full_searchable_text(item):
     try:
         return json.dumps(item, ensure_ascii=False).lower()
@@ -70,9 +85,9 @@ def extract_full_searchable_text(item):
 
 
 def main_tbmt():
-    print(f"=== BẮT ĐẦU QUÉT TBMT SÂU DANH MỤC HÀNG HÓA - NGÀY {TODAY_STR} ===")
-    raw_list = fetch_tbmt_api()
-    print(f"-> Thu thập thô từ server: {len(raw_list)} TBMT.")
+    print(f"=== BẮT ĐẦU QUÉT TOÀN BỘ TBMT - NGÀY {TODAY_STR} ===")
+    raw_list = fetch_all_tbmt_api()
+    print(f"-> Tổng số TBMT thu thập được: {len(raw_list)} bản ghi.")
     
     unique_matches = {}
     for item in raw_list:
@@ -86,7 +101,7 @@ def main_tbmt():
         if EXCLUDE_KEYWORD.lower() in full_searchable_text:
             continue
             
-        # 2. Quét từ khóa trong toàn bộ dữ liệu chi tiết
+        # 2. Đối soát từ khóa
         for kw in KEYWORDS:
             if kw.lower() in full_searchable_text:
                 if code and code not in unique_matches:
@@ -103,19 +118,19 @@ def main_tbmt():
     matched_list = list(unique_matches.values())
     print(f"-> Khớp từ khóa (bao gồm danh mục hàng hóa): {len(matched_list)} gói TBMT.")
 
-    # Render HTML Báo cáo
+    # Render HTML Email
     if not matched_list:
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h3>
-            <p>Hệ thống kết nối thành công nhưng không tìm thấy từ khóa theo dõi trong tiêu đề hoặc danh mục hàng hóa chi tiết.</p>
+            <p>Hệ thống đã quét toàn bộ {len(raw_list)} TBMT nhưng không phát hiện thông báo nào khớp từ khóa theo dõi.</p>
         </div>
         """
     else:
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h2 style="color: #0275d8;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h2>
-            <p>Phát hiện <b>{len(matched_list)}</b> TBMT phù hợp danh mục theo dõi (đã quét sâu danh mục mặt hàng):</p>
+            <p>Đã quét tổng cộng <b>{len(raw_list)}</b> TBMT trên server và phát hiện <b>{len(matched_list)}</b> gói phù hợp:</p>
             <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%;">
                 <tr style="background-color: #fff2e6;">
                     <th align="center">STT</th>
@@ -142,10 +157,10 @@ def main_tbmt():
             """
         html_body += "</table></div>"
 
-    # Gửi Email
+    # Gửi Email SMTP
     if SENDER_EMAIL and SENDER_PASSWORD:
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"[TBMT Y TẾ] Báo cáo ngày {TODAY_STR}"
+        msg["Subject"] = f"[TBMT Y TẾ FULL] Báo cáo ngày {TODAY_STR}"
         msg["From"] = SENDER_EMAIL
         msg["To"] = RECEIVER_EMAIL
         msg.attach(MIMEText(html_body, "html"))
