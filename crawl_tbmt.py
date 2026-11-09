@@ -20,7 +20,7 @@ RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", "").strip() or SENDER_EMAIL
 KEYWORDS = [
     "nội soi", "Bàn mổ", "đèn mổ", "hệ thống khí y tế", "vận chuyển mẫu", 
     "ERCP", "Monitor theo dõi bệnh nhân", "Máy hấp tiệt trùng", "Nhiệt độ thấp", 
-    "máy gây mê", "Bơm tiêm điện", "máy truyền dịch"
+    "máy gây mê", "Bơm tiêm điện", "máy truyền dịch", "bàn khám sản", "Monitor sản khoa", "máy hấp ướt", "giường ICU", "giường cấp cứu", "Bồn oxy lỏng", "Oxy trung tâm"
 ]
 
 # 2. DANH SÁCH 14 TỈNH / THÀNH PHỐ MỤC TIÊU
@@ -424,7 +424,7 @@ def send_email_report(matched_list):
 
     if SENDER_EMAIL and SENDER_PASSWORD:
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"[TBMT Y TẾ - LỌC TỈNH] Báo cáo gói thầu ngày {TODAY_STR}"
+        msg["Subject"] = f"[TBMT TBYT - Địa bàn phụ trách] Báo cáo gói thầu ngày {TODAY_STR}"
         msg["From"] = SENDER_EMAIL
         msg["To"] = RECEIVER_EMAIL
         msg.attach(MIMEText(html_body, "html"))
