@@ -31,7 +31,7 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 BASE_DOMAIN = "muasamcong.mof.gov.vn"
 
-# 2. KHỞI TẠO CHROME HEADLESS CHUẨN TRÁNH BOT DETECTION
+# 2. KHỞI TẠO CHROME HEADLESS
 def init_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
@@ -39,46 +39,66 @@ def init_driver():
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--blink-settings=imagesEnabled=false")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     return driver
 
-# 3. THU THẬP DỮ LIỆU BẰNG CÁCH TƯƠNG TÁC THỰC TẾ TRÊN BROWSER
+# 3. KÍCH HOẠT NÚT TÌM KIẾM TRÊN GIAO DIỆN ĐỂ MUA SẮM CÔNG RENDER BẢNG DỮ LIỆU
 def fetch_tbmt_by_browser_dom(driver):
     print("-> Đang truy cập Mua Sắm Công qua Chrome Headless...")
     target_url = f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index"
     driver.get(target_url)
+    wait = WebDriverWait(driver, 15)
     
     collected_items = []
-    wait = WebDriverWait(driver, 15)
 
     try:
-        # Đợi bảng dữ liệu hoặc danh sách kết quả xuất hiện trên DOM
-        time.sleep(8)
-        
-        # Bóc tách trực tiếp dữ liệu API từ Window Global State hoặc Network Cache của Liferay
+        time.sleep(5)
+        # Bấm nút Tìm kiếm hoặc phím Enter để kích hoạt load dữ liệu bảng
+        try:
+            search_btn = driver.find_elements(By.XPATH, "//button[contains(text(),'Tìm kiếm') or contains(@class,'btn-search')]")
+            if search_btn:
+                search_btn[0].click()
+                print("   + Đã kích hoạt click nút 'Tìm kiếm' trên giao diện.")
+                time.sleep(5)
+        except Exception:
+            pass
+
+        # Đọc dữ liệu từ mảng biến toàn cục Liferay hoặc DOM
         js_extract = """
         let results = [];
-        try {
-            // Tìm trong bộ nhớ cache JavaScript của trang Mua Sắm Công
-            if (window.__INITIAL_STATE__ && window.__INITIAL_STATE__.data) {
-                results = window.__INITIAL_STATE__.data;
+        // 1. Quét từ mảng lưu tạm trên window
+        window.performance.getEntries().forEach(e => {
+            if (e.name && e.name.includes('services/lcnt_tbmcgtt_hsmt')) {
+                console.log('Found API Call:', e.name);
             }
-        } catch(e) {}
-        
+        });
+
+        // 2. Quét thẻ chứa dữ liệu gói thầu
+        let cards = document.querySelectorAll('.card-item-tbmt, .table-contractor-selection tbody tr, div[class*="item-tbmt"]');
+        cards.forEach(c => {
+            let txt = c.innerText || "";
+            if (txt.length > 20) {
+                results.push({
+                    bidNo: c.querySelector('a, .code, .bid-no')?.innerText?.trim() || "",
+                    bidName: txt.substring(0, 150).replace(/\\n/g, ' '),
+                    rawText: txt
+                });
+            }
+        });
+
+        // 3. Quét toàn bộ thẻ 'a' chứa mã thông báo mời thầu
         if (results.length === 0) {
-            // Thao tác đọc dữ liệu DOM trực tiếp nếu không lấy được qua State
-            let rows = document.querySelectorAll('.table-contractor-selection tbody tr, .card-item-tbmt, .table tbody tr');
-            rows.forEach(r => {
-                let text = r.innerText || "";
-                if (text.trim().length > 0) {
+            let links = document.querySelectorAll('a[href*="tbmtNo"], a[href*="initiator"]');
+            links.forEach(l => {
+                let code = l.innerText.trim();
+                let parentText = l.parentElement?.parentElement?.innerText || code;
+                if (code) {
                     results.push({
-                        bidNo: r.querySelector('.code, .no-tbmt, td:nth-child(2)')?.innerText?.trim() || "",
-                        bidName: r.querySelector('.title, .name-tbmt, td:nth-child(3)')?.innerText?.trim() || text.substring(0, 150),
-                        procuringEntityName: r.querySelector('.investor, td:nth-child(4)')?.innerText?.trim() || "",
-                        rawText: text
+                        bidNo: code,
+                        bidName: parentText.substring(0, 150).replace(/\\n/g, ' '),
+                        rawText: parentText
                     });
                 }
             });
@@ -86,26 +106,25 @@ def fetch_tbmt_by_browser_dom(driver):
         return results;
         """
         
-        raw_dom_data = driver.execute_script(js_extract)
-        if isinstance(raw_dom_data, list) and len(raw_dom_data) > 0:
-            collected_items.extend(raw_dom_data)
-            print(f"   + Lấy thành công {len(collected_items)} bản ghi từ giao diện trình duyệt.")
+        items = driver.execute_script(js_extract)
+        if items and isinstance(items, list):
+            collected_items.extend(items)
+            print(f"   + Bóc tách thành công {len(collected_items)} bản ghi gói thầu từ DOM trình duyệt.")
         else:
-            # Fallback: Lấy toàn bộ Text của trang nếu DOM bảng chưa render kịp
             body_text = driver.find_element(By.TAG_NAME, "body").text
-            print(f"   + Lấy dữ liệu Text tổng thể trang: {len(body_text)} ký tự.")
+            print(f"   + Lấy dữ liệu Text giao diện tổng thể: {len(body_text)} ký tự.")
             collected_items.append({
-                "bidNo": "SUMMARY_PAGE",
+                "bidNo": "TBMT-ALL",
                 "bidName": "Dữ liệu trang danh sách Mua Sắm Công",
                 "rawText": body_text
             })
 
     except Exception as e:
-        print(f"[LỖI RENDER DOM] {e}")
+        print(f"[LỖI RENDER GIAO DIỆN] {e}")
 
     return collected_items
 
-# 4. DEEP-SCAN DỮ LIỆU LỒNG NHAU
+# 4. DEEP-SCAN DỮ LIỆU LỒNG NHAU FORMVALUE
 def extract_searchable_text(item):
     try:
         if "rawText" in item:
@@ -132,7 +151,7 @@ def pre_filter_candidates(raw_list):
             unique_codes.add(code)
             location = "Tiêu đề" if any(kw.lower() in f"{code} {title}".lower() for kw in matched_kw) else "Chi tiết Hàng hóa / Biểu mẫu 10B"
             candidates.append({
-                "code": code if code != "SUMMARY_PAGE" else "TBMT-YTE",
+                "code": code if code != "TBMT-ALL" else "TBMT-YTE",
                 "title": title,
                 "investor": investor,
                 "matched_kw": matched_kw,
@@ -176,7 +195,7 @@ Chỉ trả về chuỗi JSON thuần túy.
         print(f"[THÔNG BÁO AI] {e}")
         return candidates
 
-# 6. GỬI BÁO CÁO EMAIL
+# 6. GỬI EMAIL BÁO CÁO
 def send_email_report(matched_list, raw_count):
     if not RECEIVER_EMAIL:
         print("[LỖI CẤU HÌNH] Chưa khai báo email nhận.")
@@ -186,7 +205,7 @@ def send_email_report(matched_list, raw_count):
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h3>
-            <p>Hệ thống đã kết nối thành công tới Mua Sắm Công ({raw_count} bản ghi) nhưng chưa phát hiện gói thầu mới khớp 14 từ khóa theo dõi.</p>
+            <p>Hệ thống đã thu thập thành công dữ liệu ({raw_count} bản ghi) nhưng chưa phát hiện gói thầu khớp 14 từ khóa theo dõi.</p>
         </div>
         """
     else:
@@ -249,7 +268,7 @@ def send_email_report(matched_list, raw_count):
             print(f"[LỖI GỬI EMAIL SMTP] {e}")
 
 def main():
-    print(f"=== CRAWL & BÓC TÁCH SÂU TBMT BẰNG SELENIUM DOM - NGÀY {TODAY_STR} ===")
+    print(f"=== CRAWL & BÓC TÁCH SÂU TBMT BẰNG SELENIUM - NGÀY {TODAY_STR} ===")
     driver = init_driver()
     try:
         raw_list = fetch_tbmt_by_browser_dom(driver)
