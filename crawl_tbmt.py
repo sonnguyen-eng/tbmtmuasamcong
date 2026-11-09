@@ -18,17 +18,24 @@ SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", "").strip() or SENDER_EMAIL
 
 KEYWORDS = [
-    "nội soi", "nội soi tiêu hóa", "nội soi khí phế quản",
-    "Bàn mổ", "đèn mổ", "hệ thống khí y tế", "vận chuyển mẫu", "ERCP",
+    "nội soi", "Bàn mổ", "đèn mổ", "hệ thống khí y tế", "vận chuyển mẫu", "ERCP",
     "Monitor theo dõi bệnh nhân", "Máy hấp tiệt trùng", "Nhiệt độ thấp",
     "máy gây mê giúp thở", "Bơm tiêm điện", "máy truyền dịch"
+]
+
+# 2. DANH SÁCH 14 TỈNH / THÀNH PHỐ MỤC TIÊU (CHUẨN HÓA THÀNH PHỐ ĐỒNG NAI)
+TARGET_LOCATIONS = [
+    "Thành phố Đà Nẵng", "Tỉnh Quảng Ngãi", "Tỉnh Đắk Lắk", "Tỉnh Gia Lai", 
+    "Tỉnh Khánh Hòa", "Tỉnh Lâm Đồng", "Thành phố Hồ Chí Minh", "Thành phố Đồng Nai", 
+    "Tỉnh Tây Ninh", "Tỉnh Đồng Tháp", "Tỉnh Vĩnh Long", "Tỉnh An Giang", 
+    "Thành phố Cần Thơ", "Tỉnh Cà Mau"
 ]
 
 TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 BASE_DOMAIN = "muasamcong.mof.gov.vn"
 
-# 2. KHỞI TẠO CHROME HEADLESS
+# 3. KHỞI TẠO CHROME HEADLESS
 def init_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
@@ -41,13 +48,45 @@ def init_driver():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     return driver
 
-# 3. TRÍCH XUẤT DỮ LIỆU CHUẨN TỪ ENDPOINT SMART SEARCH CHỨA PAGE.CONTENT
+# 4. HÀM KIỂM TRA & CHUẨN HÓA TỈNH / THÀNH PHỐ
+def check_location(item, raw_str):
+    found_locs = []
+    
+    # Chuẩn hóa chuỗi tìm kiếm gọn nhẹ
+    investor = str(item.get("investorName") or item.get("procuringEntityName") or "").lower()
+    title = str(item.get("bidName") or "").lower()
+    search_text = f"{investor} {title} {raw_str}"
+
+    # 1. Kiểm tra mảng locations cấu trúc từ API
+    locations_arr = item.get("locations", [])
+    if isinstance(locations_arr, list):
+        for loc in locations_arr:
+            if isinstance(loc, dict):
+                prov_name = loc.get("provName", "")
+                dist_name = loc.get("districtName", "")
+                search_text += f" {prov_name} {dist_name}".lower()
+
+    # 2. Khớp với danh sách 14 Tỉnh / TP
+    for target in TARGET_LOCATIONS:
+        # Tách từ khóa tên tỉnh/TP cơ bản để so sánh (ví dụ: "đồng nai", "đà nẵng")
+        clean_kw = target.replace("Thành phố ", "").replace("Tỉnh ", "").lower()
+        if clean_kw in search_text or (clean_kw == "đắk lắk" and "đắc lắc" in search_text):
+            found_locs.append(target)
+
+    # Đảm bảo khu vực Đồng Nai luôn trả về duy nhất "Thành phố Đồng Nai"
+    normalized_locs = list(set(found_locs))
+    if any("đồng nai" in loc.lower() for loc in normalized_locs):
+        normalized_locs = [loc if "đồng nai" not in loc.lower() else "Thành phố Đồng Nai" for loc in normalized_locs]
+
+    return list(set(normalized_locs))
+
+# 5. TRÍCH XUẤT DỮ LIỆU SMART SEARCH CÓ DÙNG TOKEN
 def fetch_tbmt_by_smart_search_curl(driver):
     print("-> Đang mở trình duyệt và khởi tạo Session Mua Sắm Công...")
     driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
     time.sleep(10)
 
-    # Trích xuất Token bảo mật động sinh ra trên trình duyệt
+    # Trích xuất Token bảo mật động từ Session
     js_get_token = """
     let token = '';
     let entries = window.performance.getEntriesByType('resource');
@@ -122,8 +161,7 @@ def fetch_tbmt_by_smart_search_curl(driver):
             if not isinstance(data_list, list):
                 data_list = []
 
-            print(f"   + Server trả về: {len(data_list)} bản ghi cho từ khóa '{kw}'.")
-
+            matched_in_kw = 0
             for item in data_list:
                 if not isinstance(item, dict):
                     continue
@@ -138,23 +176,30 @@ def fetch_tbmt_by_smart_search_curl(driver):
                     
                 investor = str(item.get("investorName") or item.get("procuringEntityName") or "")
                 
-                # Deep-scan bao gồm toàn bộ thuộc tính và chuỗi escape formValue
+                # Deep-scan text bao gồm toàn bộ thuộc tính & formValue
                 raw_str = json.dumps(item, ensure_ascii=False).lower()
                 form_val = item.get("formValue")
                 if form_val and isinstance(form_val, str):
                     raw_str += " " + form_val.lower()
 
+                # LỌC 1: Khớp từ khóa Y tế
                 if kw.lower() in raw_str:
-                    if code and code not in unique_matches:
-                        location = "Tiêu đề" if kw.lower() in f"{code} {title}".lower() else "Chi tiết Hàng hóa / Biểu mẫu 10B"
-                        unique_matches[code] = {
-                            "code": code,
-                            "title": title,
-                            "investor": investor,
-                            "matched_kw": kw,
-                            "location": location,
-                            "snippet": raw_str[:1200]
-                        }
+                    # LỌC 2: Khớp Địa phương (Chỉ nhận diện "Thành phố Đồng Nai")
+                    matched_province = check_location(item, raw_str)
+                    if matched_province:
+                        matched_in_kw += 1
+                        if code and code not in unique_matches:
+                            location_detail = "Tiêu đề" if kw.lower() in f"{code} {title}".lower() else "Chi tiết Hàng hóa / Biểu mẫu 10B"
+                            unique_matches[code] = {
+                                "code": code,
+                                "title": title,
+                                "investor": investor,
+                                "province": ", ".join(matched_province),
+                                "matched_kw": kw,
+                                "location": location_detail,
+                                "snippet": raw_str[:1200]
+                            }
+            print(f"   + Server trả về {len(data_list)} bản ghi -> Khớp địa phương & từ khóa: {matched_in_kw} gói thầu.")
             time.sleep(0.5)
         except Exception as e:
             print(f"[CẢNH BÁO FETCH] Từ khóa '{kw}': {e}")
@@ -162,12 +207,11 @@ def fetch_tbmt_by_smart_search_curl(driver):
 
     return list(unique_matches.values())
 
-# 4. PHÂN TÍCH VỚI GEMINI AI (ĐÃ CẬP NHẬT MODEL GEMINI-2.0-FLASH CHUẨN)
+# 6. PHÂN TÍCH VỚI GEMINI AI
 def analyze_with_gemini(candidates):
     if not candidates or not GEMINI_API_KEY:
         return candidates
 
-    # Thử danh sách model cập nhật hỗ trợ mới nhất
     target_models = ["gemini-2.0-flash", "gemini-1.5-flash"]
     
     try:
@@ -176,12 +220,12 @@ def analyze_with_gemini(candidates):
         
         prompt = f"""
 Bạn là chuyên gia phân tích dữ liệu đấu thầu Y tế.
-Dưới đây là danh sách các Thông báo mời thầu (TBMT) đã khớp từ khóa y tế.
+Dưới đây là danh sách các Thông báo mời thầu (TBMT) đã lọc theo địa phương và từ khóa y tế.
 
 Yêu cầu:
 1. Giữ nguyên toàn bộ các gói thầu trong danh sách đầu vào.
 2. Viết 1 câu tóm tắt ngắn gọn lý do phù hợp hoặc mặt hàng chính trong gói thầu.
-3. Trả về đúng mảng JSON chứa các object: "code", "title", "investor", "matched_kw", "location", "reason".
+3. Trả về đúng mảng JSON chứa các object: "code", "title", "investor", "province", "matched_kw", "location", "reason".
 
 Danh sách:
 {json.dumps(candidates, ensure_ascii=False, indent=2)}
@@ -197,7 +241,7 @@ Chỉ trả về chuỗi JSON thuần túy (không kèm markdown).
                 content = response.text.strip()
                 if content:
                     break
-            except Exception as inner_e:
+            except Exception:
                 continue
 
         if not content:
@@ -211,8 +255,8 @@ Chỉ trả về chuỗi JSON thuần túy (không kèm markdown).
         print(f"[THÔNG BÁO AI] {e}")
         return candidates
 
-# 5. GỬI EMAIL BÁO CÁO
-def send_email_report(matched_list, raw_count):
+# 7. GỬI EMAIL BÁO CÁO
+def send_email_report(matched_list):
     if not RECEIVER_EMAIL:
         print("[LỖI CẤU HÌNH] Chưa khai báo email nhận.")
         return
@@ -221,7 +265,7 @@ def send_email_report(matched_list, raw_count):
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h3>
-            <p>Hệ thống đã truy vấn thành công dữ liệu từ Mua Sắm Công nhưng chưa phát hiện gói thầu mới khớp 14 từ khóa theo dõi.</p>
+            <p>Hệ thống đã quét dữ liệu từ Mua Sắm Công nhưng chưa phát hiện gói thầu nào khớp 14 từ khóa y tế tại 14 tỉnh/thành phố theo dõi (bao gồm Thành phố Đồng Nai).</p>
         </div>
         """
     else:
@@ -230,6 +274,7 @@ def send_email_report(matched_list, raw_count):
             code = item.get("code", "")
             title = item.get("title", "")
             investor = item.get("investor", "")
+            province = item.get("province", "Theo dõi")
             location = item.get("location", "Biểu mẫu / Hàng hóa")
             reason = item.get("reason") or "Khớp từ khóa theo dõi y tế"
             matched_kw = item.get("matched_kw", "")
@@ -242,6 +287,7 @@ def send_email_report(matched_list, raw_count):
                 <td><b>{code}</b></td>
                 <td>{title}</td>
                 <td>{investor}</td>
+                <td align="center"><b><span style="color: #d9534f;">{province}</span></b></td>
                 <td align="center"><span style="background-color: #ffffcc; padding: 3px 6px; border-radius: 3px;">{matched_kw}</span></td>
                 <td align="center"><i>{location}</i></td>
                 <td><small style="color: #333;">{reason}</small></td>
@@ -252,13 +298,14 @@ def send_email_report(matched_list, raw_count):
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h2 style="color: #0275d8;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h2>
-            <p>Đã quét dữ liệu Mua Sắm Công và phát hiện <b>{len(matched_list)}</b> gói thầu phù hợp:</p>
+            <p>Đã lọc phát hiện <b>{len(matched_list)}</b> gói thầu Y tế thuộc danh sách 14 địa phương theo dõi (bao gồm Thành phố Đồng Nai):</p>
             <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; border-color: #ddd;">
                 <tr style="background-color: #fff2e6;">
                     <th align="center">STT</th>
                     <th>Mã TBMT</th>
                     <th>Tên Gói Thầu</th>
                     <th>Bên Mời Thầu</th>
+                    <th align="center">Tỉnh / TP</th>
                     <th align="center">Từ Khóa Khớp</th>
                     <th align="center">Vị Trí Khớp</th>
                     <th>Phân Tích Chi Tiết</th>
@@ -271,7 +318,7 @@ def send_email_report(matched_list, raw_count):
 
     if SENDER_EMAIL and SENDER_PASSWORD:
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"[TBMT Y TẾ] Báo cáo gói thầu ngày {TODAY_STR}"
+        msg["Subject"] = f"[TBMT Y TẾ - LỌC TỈNH] Báo cáo gói thầu ngày {TODAY_STR}"
         msg["From"] = SENDER_EMAIL
         msg["To"] = RECEIVER_EMAIL
         msg.attach(MIMEText(html_body, "html"))
@@ -284,12 +331,12 @@ def send_email_report(matched_list, raw_count):
             print(f"[LỖI GỬI EMAIL SMTP] {e}")
 
 def main():
-    print(f"=== CRAWL & BÓC TÁCH SÂU TBMT SELENIUM SMART SEARCH - NGÀY {TODAY_STR} ===")
+    print(f"=== CRAWL & LỌC TBMT THEO TỈNH/THÀNH PHỐ - NGÀY {TODAY_STR} ===")
     driver = init_driver()
     try:
         matched_list = fetch_tbmt_by_smart_search_curl(driver)
         final_matches = analyze_with_gemini(matched_list)
-        send_email_report(final_matches, len(matched_list))
+        send_email_report(final_matches)
     finally:
         driver.quit()
 
