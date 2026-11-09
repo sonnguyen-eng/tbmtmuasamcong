@@ -10,6 +10,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from requests.adapters import HTTPAdapter
 
+# 1. TẮT CẢNH BÁO SSL KHI KẾT NỐI SERVER MUA SẮM CÔNG
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class CustomSSLAdapter(HTTPAdapter):
@@ -24,6 +25,7 @@ class CustomSSLAdapter(HTTPAdapter):
         kwargs['ssl_context'] = ctx
         return super().init_poolmanager(*args, **kwargs)
 
+# 2. CẤU HÌNH DỮ LIỆU & DANH SÁCH 14 TỪ KHÓA Y TẾ CHUẨN
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
 RECEIVER_EMAIL = SENDER_EMAIL
@@ -38,11 +40,14 @@ KEYWORDS = [
 TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
+
+# 3. TRUY VẤN DỮ LIỆU TBMT QUA ENDPOINT PUBLIC CHUẨN BACKEND V2
 def fetch_tbmt_list_raw(session):
     url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/lcnt_tbmcgtt_hsmt"
     
     headers = {
         "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
         "Content-Type": "application/json",
         "Origin": "https://muasamcong.mof.gov.vn",
         "Referer": "https://muasamcong.mof.gov.vn/web/guest/contractor-selection?render=index",
@@ -51,17 +56,17 @@ def fetch_tbmt_list_raw(session):
     
     collected_items = []
     
+    # Quét 10 trang dữ liệu TBMT mới nhất (500 gói thầu)
     for page in range(10):
-        # Đã bổ sung keySearch để không bị lỗi HTTP 500 từ backend ElasticSearch
+        # Cấu trúc Payload chuẩn cho endpoint /services/lcnt_tbmcgtt_hsmt
         payload = {
             "pageSize": 50,
             "pageNumber": page,
             "sort": "createdDate desc",
-            "keySearch": "",
             "query": [
                 {
                     "index": "es-contractor-selection",
-                    "keySearch": "",
+                    "matchType": "all-1",
                     "filters": [
                         {
                             "fieldName": "type",
@@ -85,7 +90,7 @@ def fetch_tbmt_list_raw(session):
                     data_list = data[0].get("result", {}).get("data", [])
 
                 if not data_list:
-                    print(f"-> Dừng phân trang tại trang {page}: Không có dữ liệu mới.")
+                    print(f"-> Dừng phân trang tại trang {page}: Không có thêm dữ liệu.")
                     break
                 
                 collected_items.extend(data_list)
@@ -102,6 +107,8 @@ def fetch_tbmt_list_raw(session):
 
     return collected_items
 
+
+# 4. TRÍCH XUẤT CHUỖI TOÀN BỘ NESTED JSON KÈM ESCAPE FORMVALUE ĐỂ DEEP-SEARCH
 def extract_full_searchable_text(item):
     try:
         raw_str = json.dumps(item, ensure_ascii=False).lower()
@@ -112,21 +119,26 @@ def extract_full_searchable_text(item):
     except Exception:
         return ""
 
+
+# 5. TIẾN TRÌNH THỰC THI CHÍNH
 def main_tbmt():
     print(f"=== BẮT ĐẦU CRAWL VÀ BÓC TÁCH SÂU TBMT - NGÀY {TODAY_STR} ===")
     
     session = requests.Session()
     session.mount("https://", CustomSSLAdapter())
     
+    # Khởi tạo cookie phiên làm việc ban đầu
     try:
         session.get("https://muasamcong.mof.gov.vn/web/guest/contractor-selection?render=index", timeout=15, verify=False)
     except Exception:
         pass
 
+    # BƯỚC 1: Thu thập toàn bộ danh sách TBMT thô
     print("-> Đang tải danh sách TBMT tổng thể...")
     raw_list = fetch_tbmt_list_raw(session)
     print(f"-> Thu thập thành công tổng cộng: {len(raw_list)} bản ghi thô từ máy chủ.")
     
+    # BƯỚC 2: Quét sâu 14 từ khóa trên toàn bộ dữ liệu cấu trúc lồng nhau (Không loại trừ từ khóa nào)
     unique_matches = {}
     for item in raw_list:
         code = str(item.get("bidNo") or item.get("notifyNo") or item.get("code") or item.get("id") or "")
@@ -151,6 +163,7 @@ def main_tbmt():
     print(f"-> Số gói TBMT độc bản khớp danh mục 14 từ khóa: {len(matched_list)}")
     print(f"==================================================")
 
+    # BƯỚC 3: Tạo báo cáo HTML và gửi Email
     if not matched_list:
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
@@ -202,6 +215,7 @@ def main_tbmt():
             print(f"[SUCCESS] Đã gửi báo cáo TBMT thành công tới {RECEIVER_EMAIL}!")
         except Exception as e:
             print(f"[LỖI GỬI EMAIL] {e}")
+
 
 if __name__ == "__main__":
     main_tbmt()
