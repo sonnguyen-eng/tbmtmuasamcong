@@ -52,21 +52,11 @@ def fetch_tbmt_list_raw(session):
     collected_items = []
     
     for page in range(10):
+        # Payload chuẩn chống lỗi HTTP 500 trên endpoint public
         payload = {
             "pageSize": 50,
-            "pageNumber": str(page),
-            "query": [
-                {
-                    "index": "es-contractor-selection",
-                    "filters": [
-                        {
-                            "fieldName": "type",
-                            "searchType": "in",
-                            "fieldValues": ["es-notify-contractor"]
-                        }
-                    ]
-                }
-            ]
+            "pageNumber": page,
+            "sort": "createdDate desc"
         }
         try:
             res = session.post(url, json=payload, headers=headers, timeout=25, verify=False)
