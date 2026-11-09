@@ -25,7 +25,7 @@ class CustomSSLAdapter(HTTPAdapter):
         kwargs['ssl_context'] = ctx
         return super().init_poolmanager(*args, **kwargs)
 
-# 2. CẤU HÌNH DỮ LIỆU & DANH SÁCH 14 TỪ KHÓA CHUẨN
+# 2. CẤU HÌNH DỮ LIỆU & DANH SÁCH 14 TỪ KHÓA CHUẨN Y TẾ
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
 RECEIVER_EMAIL = SENDER_EMAIL
@@ -41,9 +41,11 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
 
-# 3. TRUY VẤN DANH SÁCH TBMT THÔ (CHỐNG HTTP 500 VÀ HTTP 400)
+# 3. TRUY VẤN DANH SÁCH TBMT THÔ (FIX TRIỆT ĐỂ LỖI HTTP 400 & HTTP 500)
 def fetch_tbmt_list_raw(session):
-    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/popular-keyword/get-list"
+    url_primary = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/popular-keyword/get-list"
+    url_fallback = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/lcnt_tbmcgtt_hsmt"
+    
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json;charset=UTF-8",
@@ -53,15 +55,37 @@ def fetch_tbmt_list_raw(session):
     }
     
     collected_items = []
-    # Quét 10 trang dữ liệu mới nhất (500 gói thầu)
+    # Quét 10 trang dữ liệu TBMT mới nhất (500 gói thầu)
     for page in range(10):
-        payload = {
+        # Payload chuẩn F12 với popularKeyword chống lỗi HTTP 400
+        payload_primary = {
             "pageSize": 50,
-            "pageNumber": str(page),
-            "sort": "createdDate desc"
+            "pageNumber": page,
+            "sort": "createdDate desc",
+            "popularKeyword": {
+                "status": 1
+            }
         }
+        
         try:
-            res = session.post(url, json=payload, headers=headers, timeout=25, verify=False)
+            res = session.post(url_primary, json=payload_primary, headers=headers, timeout=25, verify=False)
+            
+            # Nếu Endpoint chính không trả về 200, tự động switch sang Fallback Endpoint
+            if res.status_code != 200:
+                payload_fb = {
+                    "pageSize": 50,
+                    "pageNumber": page,
+                    "sort": "createdDate desc",
+                    "query": [
+                        {
+                            "index": "es-tbmt",
+                            "matchType": "all-1",
+                            "matchFields": ["notifyNo", "bidName"]
+                        }
+                    ]
+                }
+                res = session.post(url_fallback, json=payload_fb, headers=headers, timeout=25, verify=False)
+
             if res.status_code == 200:
                 data = res.json()
                 data_list = []
@@ -73,7 +97,7 @@ def fetch_tbmt_list_raw(session):
                     data_list = data[0].get("result", {}).get("data", [])
 
                 if not data_list:
-                    print(f"-> Hoàn tất lấy danh sách tại trang {page}.")
+                    print(f"-> Dừng quét tại trang {page}: Đã lấy hết danh sách gói thầu mới.")
                     break
                 
                 collected_items.extend(data_list)
@@ -81,8 +105,7 @@ def fetch_tbmt_list_raw(session):
                 if len(data_list) < 50:
                     break
             else:
-                print(f"[THÔNG BÁO MẠNG HTTP {res.status_code}] Tại trang {page}")
-                # Không break ngay khi gặp 1 trang lỗi, tiếp tục bỏ qua trang đó
+                print(f"[CẢNH BÁO HTTP {res.status_code}] Tại trang {page}")
                 continue
             time.sleep(0.3)
         except Exception as e:
@@ -92,7 +115,7 @@ def fetch_tbmt_list_raw(session):
     return collected_items
 
 
-# 4. TRUY VẤN TÌM KIẾM THEO TỪ KHÓA BẰNG SMART SEARCH (FALLBACK ĐA ĐIỂM)
+# 4. TRUY VẤN TÌM KIẾM THEO TỪ KHÓA BẰNG SMART SEARCH
 def search_tbmt_by_keyword(session, keyword):
     url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/smart/search"
     headers = {
@@ -113,8 +136,15 @@ def search_tbmt_by_keyword(session, keyword):
                 "pageNumber": str(page),
                 "query": [
                     {
-                        "index": "popular-keyword",
+                        "index": "es-tbmt",
+                        "matchType": "all-1",
+                        "matchFields": ["notifyNo", "bidName"],
                         "keySearch": kw_str
+                    },
+                    {
+                        "name": "type",
+                        "searchType": "in",
+                        "fieldValues": ["es-tbmt"]
                     }
                 ]
             }
@@ -158,7 +188,7 @@ def main_tbmt():
     
     unique_matches = {}
     
-    # BƯỚC 1: Kéo danh sách thầu tổng thể
+    # BƯỚC 1: Kéo danh sách gói thầu TBMT tổng thể từ server
     print("-> Đang tải danh sách TBMT tổng thể...")
     raw_list = fetch_tbmt_list_raw(session)
     print(f"-> Thu thập thành công tổng cộng: {len(raw_list)} bản ghi thô từ máy chủ.")
@@ -182,7 +212,7 @@ def main_tbmt():
                         "location": location
                     }
 
-    # BƯỚC 2: Quét trực tiếp 14 từ khóa
+    # BƯỚC 2: Quét trực tiếp 14 từ khóa để đảm bảo không bỏ sót
     print("-> Đang thực hiện tìm kiếm sâu theo từng từ khóa y tế...")
     for kw in KEYWORDS:
         kw_items = search_tbmt_by_keyword(session, kw)
