@@ -15,7 +15,6 @@ from webdriver_manager.chrome import ChromeDriverManager
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
-# Nếu RECEIVER_EMAIL bị rỗng trên GitHub Secrets, tự động lấy SENDER_EMAIL làm email nhận
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", "").strip() or SENDER_EMAIL
 
 KEYWORDS = [
@@ -42,12 +41,18 @@ def init_driver():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     return driver
 
-# 3. TRUY VẤN DỮ LIỆU TỪ NỔI TRÌNH DUYỆT THẬT
+# 3. TRUY VẤN DỮ LIỆU THÔ QUA BROWSER FETCH VỚI PAYLOAD CHUẨN
 def fetch_tbmt_with_browser(driver, max_pages=5):
     print("-> Đang mở trình duyệt và kết nối Mua Sắm Công...")
     driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
-    # Chờ 8 giây để trang khởi tạo xong Session và Cookie Liferay
-    time.sleep(8)
+    time.sleep(6)
+
+    # Thao tác cuộn trang để kích hoạt session Liferay
+    try:
+        driver.execute_script("window.scrollTo(0, 500);")
+        time.sleep(2)
+    except Exception:
+        pass
 
     collected_items = []
 
@@ -65,8 +70,10 @@ def fetch_tbmt_with_browser(driver, max_pages=5):
             pageSize: 50,
             pageNumber: pageNum,
             sort: "createdDate desc",
+            keySearch: "",
             query: [{
                 index: "es-contractor-selection",
+                keySearch: "",
                 filters: [{ fieldName: "type", searchType: "in", fieldValues: ["es-notify-contractor"] }]
             }]
         })
@@ -92,7 +99,7 @@ def fetch_tbmt_with_browser(driver, max_pages=5):
                 data_list = res[0].get("result", {}).get("data", [])
 
             if not data_list:
-                print(f"-> Dừng phân trang tại trang {page}: Hết dữ liệu mới.")
+                print(f"-> Dừng phân trang tại trang {page}: Không có dữ liệu trả về.")
                 break
 
             collected_items.extend(data_list)
@@ -175,10 +182,10 @@ Chỉ trả về chuỗi JSON thuần túy.
         print(f"[THÔNG BÁO AI] {e}")
         return candidates
 
-# 6. GỬI EMAIL THÔNG BÁO SỬA LỖI EMAIL RÕNG
+# 6. GỬI EMAIL THÔNG BÁO BÁO CÁO
 def send_email_report(matched_list, raw_count):
     if not RECEIVER_EMAIL:
-        print("[LỖI CẤU HÌNH] Chưa khai báo email nhận (RECEIVER_EMAIL / SENDER_EMAIL rỗng).")
+        print("[LỖI CẤU HÌNH] Chưa khai báo email nhận.")
         return
 
     if not matched_list:
@@ -246,8 +253,6 @@ def send_email_report(matched_list, raw_count):
             print(f"[SUCCESS] Đã gửi báo cáo TBMT thành công tới email: {RECEIVER_EMAIL}!")
         except Exception as e:
             print(f"[LỖI GỬI EMAIL SMTP] {e}")
-    else:
-        print("[CẢNH BÁO] Khuyết SENDER_EMAIL hoặc SENDER_PASSWORD.")
 
 def main():
     print(f"=== CRAWL & BÓC TÁCH SÂU TBMT BẰNG SELENIUM - NGÀY {TODAY_STR} ===")
