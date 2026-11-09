@@ -41,13 +41,14 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
 
-# 3. TRUY VẤN API SMART SEARCH (CHỐNG LỖI HTTP 400 BẰNG CƠ CHẾ DỰ PHÒNG PAYLOAD KHÔNG TOKEN)
+# 3. HÀM TRUY VẤN API SMART SEARCH (SỬ DỤNG ĐÚNG CẤU TRÚC cURL F12 CỦA ANH SƠN)
 def fetch_tbmt_by_keyword(session, keyword):
-    url_primary = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/smart/search"
-    url_public = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/lcnt_tbmcgtt_hsmt"
+    # Sử dụng endpoint search trực tiếp từ cURL F12
+    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/smart/search"
     
     headers = {
         "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
         "Content-Type": "application/json",
         "Origin": "https://muasamcong.mof.gov.vn",
         "Referer": "https://muasamcong.mof.gov.vn/web/guest/contractor-selection?render=index",
@@ -57,9 +58,10 @@ def fetch_tbmt_by_keyword(session, keyword):
     items_found = []
     kw_str = str(keyword).strip()
 
+    # Quét 4 trang cho mỗi từ khóa (200 gói thầu/từ khóa)
     for page in range(4):
-        # Payload A: Cấu trúc Elasticsearch chuẩn theo cURL F12
-        payload_a = [
+        # Payload khớp 100% với cURL bash F12 anh đã gửi
+        payload = [
             {
                 "pageSize": 50,
                 "pageNumber": str(page),
@@ -74,6 +76,11 @@ def fetch_tbmt_by_keyword(session, keyword):
                                 "fieldName": "type",
                                 "searchType": "in",
                                 "fieldValues": ["es-notify-contractor"]
+                            },
+                            {
+                                "fieldName": "caseKHKQ",
+                                "searchType": "not_in",
+                                "fieldValues": ["1"]
                             }
                         ]
                     }
@@ -81,27 +88,9 @@ def fetch_tbmt_by_keyword(session, keyword):
             }
         ]
         
-        # Payload B: Cấu trúc dự phòng cho endpoint công khai
-        payload_b = {
-            "pageSize": 50,
-            "pageNumber": page,
-            "sort": "createdDate desc",
-            "keySearch": kw_str,
-            "query": [
-                {
-                    "index": "es-contractor-selection",
-                    "keySearch": kw_str
-                }
-            ]
-        }
-
         try:
-            res = session.post(url_primary, json=payload_a, headers=headers, timeout=20, verify=False)
+            res = session.post(url, json=payload, headers=headers, timeout=25, verify=False)
             
-            # Nếu Smart Search yêu cầu Token (HTTP 400), chuyển ngay sang Public Endpoint
-            if res.status_code != 200:
-                res = session.post(url_public, json=payload_b, headers=headers, timeout=20, verify=False)
-
             if res.status_code == 200:
                 data = res.json()
                 data_list = []
@@ -109,8 +98,6 @@ def fetch_tbmt_by_keyword(session, keyword):
                     data_list = data[0].get("result", {}).get("data", [])
                 elif isinstance(data, dict):
                     data_list = data.get("result", {}).get("data", [])
-                    if not data_list and isinstance(data.get("result"), list):
-                        data_list = data.get("result", [])
 
                 if not data_list:
                     break
@@ -119,17 +106,18 @@ def fetch_tbmt_by_keyword(session, keyword):
                 if len(data_list) < 50:
                     break
             else:
-                print(f"[THÔNG BÁO MẠNG HTTP {res.status_code}] Từ khóa '{keyword}' tại trang {page}")
+                # In thông báo ngắn gọn nếu gặp sự cố kết nối
+                print(f"[HTTP {res.status_code}] Từ khóa '{keyword}' tại trang {page}")
                 break
             time.sleep(0.3)
         except Exception as e:
-            print(f"[LỖI API] Từ khóa '{keyword}' trang {page}: {e}")
+            print(f"[LỖI TRUY VẤN] Từ khóa '{keyword}' trang {page}: {e}")
             break
 
     return items_found
 
 
-# 4. CHUYỂN TOÀN BỘ NESTED JSON THÀNH STR ĐỂ DEEP-SEARCH LOCAL
+# 4. CHUYỂN TOÀN BỘ NESTED JSON THÀNH STR ĐỂ DEEP-SEARCH HÀNG HÓA CHI TIẾT
 def extract_full_searchable_text(item):
     try:
         return json.dumps(item, ensure_ascii=False).lower()
@@ -137,18 +125,24 @@ def extract_full_searchable_text(item):
         return ""
 
 
-# 5. CHƯƠNG TRÌNH CHÍNH
+# 5. TIẾN TRÌNH THỰC THI CHÍNH
 def main_tbmt():
     print(f"=== BẮT ĐẦU CRAWL VÀ BÓC TÁCH SÂU TBMT - NGÀY {TODAY_STR} ===")
     
     session = requests.Session()
     session.mount("https://", CustomSSLAdapter())
     
+    # Khởi tạo Session Cookie cơ bản để tránh bị Server từ chối
+    try:
+        session.get("https://muasamcong.mof.gov.vn/web/guest/contractor-selection", timeout=15, verify=False)
+    except Exception:
+        pass
+
     unique_matches = {}
     total_raw_scanned = 0
 
     for kw in KEYWORDS:
-        print(f"-> Truy vấn API cho từ khóa: '{kw}'...")
+        print(f"-> Truy vấn API Smart Search cho từ khóa: '{kw}'...")
         raw_items = fetch_tbmt_by_keyword(session, kw)
         total_raw_scanned += len(raw_items)
         print(f"   + Server trả về: {len(raw_items)} bản ghi.")
