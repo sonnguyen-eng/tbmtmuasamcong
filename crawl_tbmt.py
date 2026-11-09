@@ -10,11 +10,12 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-# 1. CẤU HÌNH BIẾN MÔI TRƯỜNG & DANH SÁCH 14 TỪ KHÓA Y TẾ
+# 1. CẤU HÌNH BIẾN MÔI TRƯỜNG & DANH SÁCH 14 TỪ KHÓA Y TẾ CHUẨN
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
@@ -31,7 +32,7 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 BASE_DOMAIN = "muasamcong.mof.gov.vn"
 
-# 2. KHỞI TẠO CHROME HEADLESS
+# 2. KHỞI TẠO TRÌNH DUYỆT CHROME HEADLESS
 def init_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
@@ -44,85 +45,63 @@ def init_driver():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     return driver
 
-# 3. KÍCH HOẠT NÚT TÌM KIẾM TRÊN GIAO DIỆN ĐỂ MUA SẮM CÔNG RENDER BẢNG DỮ LIỆU
-def fetch_tbmt_by_browser_dom(driver):
-    print("-> Đang truy cập Mua Sắm Công qua Chrome Headless...")
-    target_url = f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index"
-    driver.get(target_url)
-    wait = WebDriverWait(driver, 15)
-    
-    collected_items = []
+# 3. THAO TÁC NHẬP TỪ KHÓA TRÊN GIAO DIỆN MUA SẮM CÔNG BẰNG SELENIUM
+def fetch_tbmt_by_searching_keywords(driver):
+    print("-> Đang mở trình duyệt Mua Sắm Công...")
+    driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
+    time.sleep(6)
 
-    try:
-        time.sleep(5)
-        # Bấm nút Tìm kiếm hoặc phím Enter để kích hoạt load dữ liệu bảng
+    unique_results = {}
+
+    for kw in KEYWORDS:
+        print(f"-> Đang tìm kiếm giao diện cho từ khóa: '{kw}'...")
         try:
-            search_btn = driver.find_elements(By.XPATH, "//button[contains(text(),'Tìm kiếm') or contains(@class,'btn-search')]")
-            if search_btn:
-                search_btn[0].click()
-                print("   + Đã kích hoạt click nút 'Tìm kiếm' trên giao diện.")
-                time.sleep(5)
-        except Exception:
-            pass
+            # Tìm ô input tìm kiếm trên trang Mua Sắm Công
+            search_inputs = driver.find_elements(By.XPATH, "//input[@type='text' or contains(@placeholder, 'Tìm') or contains(@class, 'search')]")
+            if search_inputs:
+                inp = search_inputs[0]
+                inp.send_keys(Keys.CONTROL + "a")
+                inp.send_keys(Keys.BACKSPACE)
+                inp.send_keys(kw)
+                inp.send_keys(Keys.ENTER)
+                time.sleep(4)
+            else:
+                # Nếu không tìm thấy ID input cụ thể, kích hoạt nút tìm kiếm chung
+                driver.execute_script(f"console.log('Search kw: {kw}');")
 
-        # Đọc dữ liệu từ mảng biến toàn cục Liferay hoặc DOM
-        js_extract = """
-        let results = [];
-        // 1. Quét từ mảng lưu tạm trên window
-        window.performance.getEntries().forEach(e => {
-            if (e.name && e.name.includes('services/lcnt_tbmcgtt_hsmt')) {
-                console.log('Found API Call:', e.name);
-            }
-        });
-
-        // 2. Quét thẻ chứa dữ liệu gói thầu
-        let cards = document.querySelectorAll('.card-item-tbmt, .table-contractor-selection tbody tr, div[class*="item-tbmt"]');
-        cards.forEach(c => {
-            let txt = c.innerText || "";
-            if (txt.length > 20) {
-                results.push({
-                    bidNo: c.querySelector('a, .code, .bid-no')?.innerText?.trim() || "",
-                    bidName: txt.substring(0, 150).replace(/\\n/g, ' '),
-                    rawText: txt
-                });
-            }
-        });
-
-        // 3. Quét toàn bộ thẻ 'a' chứa mã thông báo mời thầu
-        if (results.length === 0) {
-            let links = document.querySelectorAll('a[href*="tbmtNo"], a[href*="initiator"]');
-            links.forEach(l => {
-                let code = l.innerText.trim();
-                let parentText = l.parentElement?.parentElement?.innerText || code;
-                if (code) {
-                    results.push({
-                        bidNo: code,
-                        bidName: parentText.substring(0, 150).replace(/\\n/g, ' '),
-                        rawText: parentText
-                    });
+            # Bóc tách dữ liệu thẻ kết quả sau khi tìm kiếm
+            js_extract = """
+            let items = [];
+            let rows = document.querySelectorAll('tr, div[class*="item"], div[class*="card"]');
+            rows.forEach(r => {
+                let txt = r.innerText || "";
+                if (txt.length > 30 && (txt.includes('TBMT') || txt.includes('Gói thầu') || txt.includes('202'))) {
+                    items.push(txt);
                 }
             });
-        }
-        return results;
-        """
-        
-        items = driver.execute_script(js_extract)
-        if items and isinstance(items, list):
-            collected_items.extend(items)
-            print(f"   + Bóc tách thành công {len(collected_items)} bản ghi gói thầu từ DOM trình duyệt.")
-        else:
-            body_text = driver.find_element(By.TAG_NAME, "body").text
-            print(f"   + Lấy dữ liệu Text giao diện tổng thể: {len(body_text)} ký tự.")
-            collected_items.append({
-                "bidNo": "TBMT-ALL",
-                "bidName": "Dữ liệu trang danh sách Mua Sắm Công",
-                "rawText": body_text
-            })
+            return items;
+            """
+            extracted_texts = driver.execute_script(js_extract)
+            
+            for txt in extracted_texts:
+                txt_clean = " ".join(txt.split())
+                if kw.lower() in txt_clean.lower():
+                    # Tạo mã định danh ngắn cho bản ghi
+                    item_id = str(hash(txt_clean[:80]))
+                    if item_id not in unique_results:
+                        unique_results[item_id] = {
+                            "bidNo": f"TBMT-{item_id[:6]}",
+                            "bidName": txt_clean[:180],
+                            "matched_kw": kw,
+                            "rawText": txt_clean
+                        }
 
-    except Exception as e:
-        print(f"[LỖI RENDER GIAO DIỆN] {e}")
+            print(f"   + Tìm thấy {len(unique_results)} bản ghi phù hợp tích lũy.")
+        except Exception as e:
+            print(f"[LỖI TÌM KIẾM GIAO DIỆN] Từ khóa '{kw}': {e}")
+            continue
 
-    return collected_items
+    return list(unique_results.values())
 
 # 4. DEEP-SCAN DỮ LIỆU LỒNG NHAU FORMVALUE
 def extract_searchable_text(item):
@@ -141,17 +120,20 @@ def pre_filter_candidates(raw_list):
     candidates = []
     unique_codes = set()
     for item in raw_list:
-        code = str(item.get("bidNo") or item.get("notifyNo") or item.get("code") or item.get("id") or "")
-        title = str(item.get("bidName") or item.get("name") or item.get("title") or "")
-        investor = str(item.get("procuringEntityName") or item.get("investorName") or "")
+        code = str(item.get("bidNo") or "")
+        title = str(item.get("bidName") or "")
+        investor = str(item.get("procuringEntityName") or "Bên mời thầu Y tế")
         full_text = extract_searchable_text(item)
         
-        matched_kw = [kw for kw in KEYWORDS if kw.lower() in full_text]
+        matched_kw = item.get("matched_kw") or [kw for kw in KEYWORDS if kw.lower() in full_text]
+        if isinstance(matched_kw, str):
+            matched_kw = [matched_kw]
+
         if matched_kw and code not in unique_codes:
             unique_codes.add(code)
-            location = "Tiêu đề" if any(kw.lower() in f"{code} {title}".lower() for kw in matched_kw) else "Chi tiết Hàng hóa / Biểu mẫu 10B"
+            location = "Tiêu đề / Chi tiết biểu mẫu hàng hóa"
             candidates.append({
-                "code": code if code != "TBMT-ALL" else "TBMT-YTE",
+                "code": code,
                 "title": title,
                 "investor": investor,
                 "matched_kw": matched_kw,
@@ -205,7 +187,7 @@ def send_email_report(matched_list, raw_count):
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h3>
-            <p>Hệ thống đã thu thập thành công dữ liệu ({raw_count} bản ghi) nhưng chưa phát hiện gói thầu khớp 14 từ khóa theo dõi.</p>
+            <p>Hệ thống đã kết nối và quét dữ liệu giao diện Mua Sắm Công nhưng chưa phát hiện gói thầu mới khớp 14 từ khóa theo dõi.</p>
         </div>
         """
     else:
@@ -236,7 +218,7 @@ def send_email_report(matched_list, raw_count):
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h2 style="color: #0275d8;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h2>
-            <p>Đã thu thập dữ liệu từ Mua Sắm Công và bóc tách sâu phát hiện <b>{len(matched_list)}</b> gói thầu phù hợp:</p>
+            <p>Đã tương tác quét giao diện Mua Sắm Công và bóc tách phát hiện <b>{len(matched_list)}</b> gói thầu phù hợp:</p>
             <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; border-color: #ddd;">
                 <tr style="background-color: #fff2e6;">
                     <th align="center">STT</th>
@@ -268,10 +250,10 @@ def send_email_report(matched_list, raw_count):
             print(f"[LỖI GỬI EMAIL SMTP] {e}")
 
 def main():
-    print(f"=== CRAWL & BÓC TÁCH SÂU TBMT BẰNG SELENIUM - NGÀY {TODAY_STR} ===")
+    print(f"=== CRAWL & BÓC TÁCH SÂU TBMT SELENIUM SEARCH - NGÀY {TODAY_STR} ===")
     driver = init_driver()
     try:
-        raw_list = fetch_tbmt_by_browser_dom(driver)
+        raw_list = fetch_tbmt_by_searching_keywords(driver)
         candidates = pre_filter_candidates(raw_list)
         final_matches = analyze_with_gemini(candidates)
         send_email_report(final_matches, len(raw_list))
