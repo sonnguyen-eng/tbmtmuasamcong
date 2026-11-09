@@ -40,9 +40,9 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
 
-# 3. TRUY VẤN LẤY DỮ LIỆU THẦU THÔ TỪ MUA SẮM CÔNG V2 (F12 ENDPOINT)
+# 3. TRUY VẤN DỮ LIỆU THẦU QUA SMART SEARCH (CHÍNH XÁC WEB MUA SẮM CÔNG)
 def fetch_all_tbmt_raw(session):
-    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/popular-keyword/get-list"
+    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/smart/search"
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json;charset=UTF-8",
@@ -52,28 +52,38 @@ def fetch_all_tbmt_raw(session):
     }
     
     collected_items = []
-    # Quét 10 trang dữ liệu mới nhất (tương đương 500 gói thầu)
+    # Quét 10 trang dữ liệu mới nhất (500 gói thầu)
     for page in range(10):
-        payload = {
-            "pageSize": 50,
-            "pageNumber": page,
-            "sort": "createdDate desc",
-            "popularKeyword": {
-                "status": 1
+        payload = [
+            {
+                "pageSize": 50,
+                "pageNumber": str(page),
+                "query": [
+                    {
+                        "index": "es-tbmt",
+                        "matchType": "all-1",
+                        "matchFields": ["notifyNo", "bidName"]
+                    },
+                    {
+                        "name": "type",
+                        "searchType": "in",
+                        "fieldValues": ["es-tbmt"]
+                    }
+                ]
             }
-        }
+        ]
         try:
             res = session.post(url, json=payload, headers=headers, timeout=25, verify=False)
             if res.status_code == 200:
                 data = res.json()
                 data_list = []
-                if isinstance(data.get("result"), dict):
+                if isinstance(data, list) and len(data) > 0:
+                    data_list = data[0].get("result", {}).get("data", [])
+                elif isinstance(data, dict):
                     data_list = data.get("result", {}).get("data", [])
-                elif isinstance(data.get("result"), list):
-                    data_list = data.get("result", [])
 
                 if not data_list:
-                    print(f"-> Dừng phân trang tại trang {page}: Không còn dữ liệu mới.")
+                    print(f"-> Dừng phân trang tại trang {page}: Không có bản ghi mới.")
                     break
                 
                 collected_items.extend(data_list)
@@ -107,11 +117,11 @@ def main_tbmt():
     session = requests.Session()
     session.mount("https://", CustomSSLAdapter())
     
-    # Bước 1: Kéo dữ liệu thầu từ Server
+    # Bước 1: Kéo dữ liệu thầu thô từ Server
     raw_items = fetch_all_tbmt_raw(session)
     print(f"-> Thu thập thành công tổng cộng: {len(raw_items)} bản ghi thô từ máy chủ.")
     
-    # Bước 2: Bóc tách và lọc từ khóa sâu
+    # Bước 2: Bóc tách và đối soát 14 từ khóa
     unique_matches = {}
     for item in raw_items:
         code = str(item.get("bidNo") or item.get("notifyNo") or item.get("code") or item.get("id") or "")
