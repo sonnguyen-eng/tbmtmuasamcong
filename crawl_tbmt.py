@@ -41,38 +41,29 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
 
-# 3. TRUY VẤN DỮ LIỆU TBMT THÔ KHÔNG PHỤ THUỘC TOKEN GIAO DIỆN
+# 3. TRUY VẤN DỮ LIỆU TBMT THÔ THEO PAYLOAD cURL F12 XÁC THỰC
 def fetch_tbmt_list_raw(session):
-    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/lcnt_tbmcgtt_hsmt"
+    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/popular-keyword/get-list"
     
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
         "Origin": "https://muasamcong.mof.gov.vn",
         "Referer": "https://muasamcong.mof.gov.vn/web/guest/contractor-selection?render=index",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
     }
     
     collected_items = []
     
-    # Quét 10 trang dữ liệu TBMT mới nhất (500 gói thầu)
-    for page in range(10):
+    # Quét 5 trang dữ liệu TBMT (mỗi trang 100 gói thầu = 500 gói thầu mới nhất)
+    for page in range(1, 6):
         payload = {
-            "pageSize": 50,
+            "pageSize": 100,
             "pageNumber": page,
             "sort": "createdDate desc",
-            "query": [
-                {
-                    "index": "es-contractor-selection",
-                    "filters": [
-                        {
-                            "fieldName": "type",
-                            "searchType": "in",
-                            "fieldValues": ["es-notify-contractor"]
-                        }
-                    ]
-                }
-            ]
+            "popularKeyword": {
+                "status": 1
+            }
         }
         try:
             res = session.post(url, json=payload, headers=headers, timeout=25, verify=False)
@@ -87,12 +78,12 @@ def fetch_tbmt_list_raw(session):
                     data_list = data[0].get("result", {}).get("data", [])
 
                 if not data_list:
-                    print(f"-> Dừng phân trang tại trang {page}: Hoàn tất lấy toàn bộ danh sách gói thầu mới.")
+                    print(f"-> Hoàn tất lấy danh sách tại trang {page}.")
                     break
                 
                 collected_items.extend(data_list)
-                print(f"   + Lấy thành công trang {page + 1}: thêm {len(data_list)} TBMT (Tích lũy: {len(collected_items)} bản ghi).")
-                if len(data_list) < 50:
+                print(f"   + Lấy thành công trang {page}: thêm {len(data_list)} TBMT (Tích lũy: {len(collected_items)} bản ghi).")
+                if len(data_list) < 100:
                     break
             else:
                 print(f"[CẢNH BÁO MẠNG HTTP {res.status_code}] Trang {page}")
@@ -105,11 +96,10 @@ def fetch_tbmt_list_raw(session):
     return collected_items
 
 
-# 4. CHUYỂN TOÀN BỘ NESTED JSON VÀ PHÂN TÍCH CHUỖI ESCAPE FORMVALUE ĐỂ DEEP-SEARCH
+# 4. TRÍCH XUẤT TOÀN BỘ CHUỖI CẤU TRÚC JSON KÈM ESCAPE FORMVALUE ĐỂ DEEP-SEARCH
 def extract_full_searchable_text(item):
     try:
         raw_str = json.dumps(item, ensure_ascii=False).lower()
-        # Giải mã chuỗi escape formValue nếu có
         form_val = item.get("formValue")
         if form_val and isinstance(form_val, str):
             raw_str += " " + form_val.lower()
@@ -125,7 +115,7 @@ def main_tbmt():
     session = requests.Session()
     session.mount("https://", CustomSSLAdapter())
     
-    # Khởi tạo Session Cookie để đảm bảo handshake hạ tầng
+    # Handshake Session khởi tạo Cookie
     try:
         session.get("https://muasamcong.mof.gov.vn/web/guest/contractor-selection?render=index", timeout=15, verify=False)
     except Exception:
