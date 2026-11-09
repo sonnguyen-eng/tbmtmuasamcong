@@ -128,94 +128,140 @@ def get_hsmt_form_values(driver, notify_no, notify_version="00", bid_field="HH")
         pass
     return ""
 
-# 7. QUÉT TỔNG THỂ TẤT CẢ GÓI THẦU TRONG NGÀY + DEEP-SCAN BIỂU MẪU 10B
+# 7. TRÍCH XUẤT SMART SEARCH CẦN THIẾT KẾT HỢP DEEP-SCAN DEEP SEARCH
 def fetch_tbmt_today(driver):
-    print(f"-> Đang kết nối Mua Sắm Công (Quét tổng thể TBMT ngày {TODAY_STR})...")
+    print(f"-> Đang mở trình duyệt và khởi tạo Session Mua Sắm Công (Ngày {TODAY_STR})...")
     driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
     time.sleep(10)
 
-    # Đổi cơ chế: Gọi lấy danh sách tất cả TBMT mới nhất phát hành (không search theo từ khóa để tránh bỏ sót)
-    js_fetch_all = """
+    # Trích xuất Token bảo mật động
+    js_get_token = """
+    let token = '';
+    let entries = window.performance.getEntriesByType('resource');
+    for (let e of entries) {
+        if (e.name && e.name.includes('smart/search?token=')) {
+            let match = e.name.match(/token=([^&]+)/);
+            if (match) {
+                token = match[1];
+                break;
+            }
+        }
+    }
+    return token;
+    """
+    token_val = driver.execute_script(js_get_token)
+    if token_val:
+        print(f"-> Token bảo mật trích xuất từ Session: {token_val[:20]}...")
+
+    unique_matches = {}
+
+    js_fetch_search = """
     var callback = arguments[arguments.length - 1];
+    var kw = arguments[0];
+    var token = arguments[1];
     
-    fetch('/o/egp-portal-contractor-selection-v2/services/lcnt_tbmcgtt_hsmt', {
+    let url = '/o/egp-portal-contractor-selection-v2/services/smart/search';
+    if (token) {
+        url += '?token=' + token;
+    }
+    
+    fetch(url, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'Accept': 'application/json, text/plain, */*'
         },
-        body: JSON.stringify({
-            pageSize: 100,
-            pageNumber: 0,
-            sort: "publicDate desc"
-        })
+        body: JSON.stringify([{
+            pageSize: 50,
+            pageNumber: "0",
+            query: [{
+                index: "es-contractor-selection",
+                keyWord: kw,
+                matchType: "all-1",
+                matchFields: ["notifyNo", "bidName"],
+                filters: [
+                    { fieldName: "type", searchType: "in", fieldValues: ["es-notify-contractor"] },
+                    { fieldName: "caseKHKQ", searchType: "not_in", fieldValues: ["1"] }
+                ]
+            }]
+        }])
     })
     .then(response => response.json())
     .then(data => callback(data))
     .catch(err => callback({ error: err.toString() }));
     """
 
-    unique_matches = {}
-    try:
-        res = driver.execute_async_script(js_fetch_all)
-        data_list = []
-        if isinstance(res, dict):
-            data_list = res.get("result", {}).get("data", []) or res.get("page", {}).get("content", [])
-        elif isinstance(res, list) and len(res) > 0:
-            first = res[0]
-            if isinstance(first, dict):
-                data_list = first.get("result", {}).get("data", []) or first.get("page", {}).get("content", []) or first.get("data", [])
+    # Tập hợp các từ khóa tìm kiếm tổng thể để không bỏ sót gói thầu y tế
+    search_queries = KEYWORDS + ["thiết bị y tế", "y tế", "bệnh viện", "dụng cụ y tế"]
 
-        print(f"   + Đã lấy về {len(data_list)} gói thầu mới đăng tải trong ngày.")
-
-        for item in data_list:
-            if not isinstance(item, dict):
-                continue
-
-            # CHỈ LẤY TBMT PHÁT HÀNH TỪ 00H00 NGÀY HÔM NAY
-            if not is_published_strictly_today(item):
-                continue
-
-            code = str(item.get("notifyNo") or item.get("notifyNoStand") or item.get("bidNo") or item.get("id") or "")
-            notify_ver = str(item.get("notifyVersion") or "00")
-            bid_field = str(item.get("bidField") or "HH")
-
-            bid_name_raw = item.get("bidName")
-            if isinstance(bid_name_raw, list) and len(bid_name_raw) > 0:
-                title = str(bid_name_raw[0])
-            else:
-                title = str(bid_name_raw or item.get("name") or "")
-                
-            investor = str(item.get("investorName") or item.get("procuringEntityName") or "")
+    for kw in search_queries:
+        print(f"-> Truy vấn API Smart Search cho: '{kw}'...")
+        try:
+            res = driver.execute_async_script(js_fetch_search, kw, token_val)
+            data_list = []
             
-            # TẦNG 1: Gom dữ liệu JSON gói thầu
-            raw_str = json.dumps(item, ensure_ascii=False).lower()
+            if isinstance(res, list) and len(res) > 0:
+                first_item = res[0]
+                if isinstance(first_item, dict):
+                    data_list = first_item.get("page", {}).get("content", [])
+            elif isinstance(res, dict):
+                data_list = res.get("page", {}).get("content", [])
 
-            # TẦNG 2: DEEP-SCAN gọi get-all-hsmt bóc tách Biểu mẫu 10B
-            if code:
-                hsmt_str = get_hsmt_form_values(driver, code, notify_ver, bid_field)
-                if hsmt_str:
-                    raw_str += " " + hsmt_str
+            if not isinstance(data_list, list):
+                data_list = []
 
-            # LỌC TỪ KHÓA Y TẾ VÀ ĐỊA PHƯƠNG
-            matched_kws = [kw for kw in KEYWORDS if kw.lower() in raw_str]
-            if matched_kws:
-                matched_province = check_location(item, raw_str)
-                if matched_province:
-                    if code and code not in unique_matches:
-                        location_detail = "Tiêu đề" if any(k.lower() in f"{code} {title}".lower() for k in matched_kws) else "Chi tiết Hàng hóa / Biểu mẫu 10B"
-                        unique_matches[code] = {
-                            "code": code,
-                            "title": title,
-                            "investor": investor,
-                            "province": ", ".join(matched_province),
-                            "matched_kw": ", ".join(matched_kws),
-                            "location": location_detail,
-                            "snippet": raw_str[:1200]
-                        }
+            matched_in_kw = 0
+            for item in data_list:
+                if not isinstance(item, dict):
+                    continue
 
-    except Exception as e:
-        print(f"[CẢNH BÁO QUÉT] Lỗi bóc tách: {e}")
+                # BẮT BỘ LỌC ĐÚNG 1 NGÀY HÔM NAY (00H00 -> HIỆN TẠI)
+                if not is_published_strictly_today(item):
+                    continue
+
+                code = str(item.get("notifyNo") or item.get("notifyNoStand") or item.get("bidNo") or item.get("id") or "")
+                notify_ver = str(item.get("notifyVersion") or "00")
+                bid_field = str(item.get("bidField") or "HH")
+
+                bid_name_raw = item.get("bidName")
+                if isinstance(bid_name_raw, list) and len(bid_name_raw) > 0:
+                    title = str(bid_name_raw[0])
+                else:
+                    title = str(bid_name_raw or item.get("name") or "")
+                    
+                investor = str(item.get("investorName") or item.get("procuringEntityName") or "")
+                
+                # TẦNG 1: Bóc tách thuộc tính JSON mặc định
+                raw_str = json.dumps(item, ensure_ascii=False).lower()
+
+                # TẦNG 2 (DEEP-SCAN): Truy vấn bóc tách Biểu mẫu 10B/HSMT cho mọi gói thầu
+                if code:
+                    hsmt_str = get_hsmt_form_values(driver, code, notify_ver, bid_field)
+                    if hsmt_str:
+                        raw_str += " " + hsmt_str
+
+                # LỌC TỪ KHÓA Y TẾ THỰC TẾ (12 KEYWORDS)
+                matched_kws = [k for k in KEYWORDS if k.lower() in raw_str]
+                if matched_kws:
+                    matched_province = check_location(item, raw_str)
+                    if matched_province:
+                        matched_in_kw += 1
+                        if code and code not in unique_matches:
+                            location_detail = "Tiêu đề" if any(k.lower() in f"{code} {title}".lower() for k in matched_kws) else "Chi tiết Hàng hóa / Biểu mẫu 10B"
+                            unique_matches[code] = {
+                                "code": code,
+                                "title": title,
+                                "investor": investor,
+                                "province": ", ".join(matched_province),
+                                "matched_kw": ", ".join(matched_kws),
+                                "location": location_detail,
+                                "snippet": raw_str[:1200]
+                            }
+            print(f"   + Server trả về {len(data_list)} bản ghi -> Khớp ngày {TODAY_STR}, địa phương & từ khóa: {matched_in_kw} gói thầu.")
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"[CẢNH BÁO FETCH] Từ khóa '{kw}': {e}")
+            continue
 
     return list(unique_matches.values())
 
