@@ -11,7 +11,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 
-# 1. CẤU HÌNH BIẾN MÔI TRƯỜNG & DANH SÁCH 12 TỪ KHÓA Y TẾ
+# 1. CẤU HÌNH BIẾN MÔI TRƯỜNG & DANH SÁCH 19 TỪ KHÓA Y TẾ
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
@@ -20,12 +20,14 @@ RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", "").strip() or SENDER_EMAIL
 KEYWORDS = [
     "nội soi", "Bàn mổ", "đèn mổ", "hệ thống khí y tế", "vận chuyển mẫu", 
     "ERCP", "Monitor theo dõi bệnh nhân", "Máy hấp tiệt trùng", "Nhiệt độ thấp", 
-    "máy gây mê", "Bơm tiêm điện", "máy truyền dịch", "bàn khám sản", "Monitor sản khoa", "máy hấp ướt", "giường ICU", "giường cấp cứu", "Bồn oxy lỏng", "Oxy trung tâm"
+    "máy gây mê", "Bơm tiêm điện", "máy truyền dịch", "bàn khám sản", 
+    "Monitor sản khoa", "máy hấp ướt", "giường ICU", "giường cấp cứu", 
+    "Bồn oxy lỏng", "Oxy trung tâm"
 ]
 
 # 2. DANH SÁCH 14 TỈNH / THÀNH PHỐ MỤC TIÊU
 TARGET_LOCATIONS = [
-    "Thành phố Đà Nẵng", "Tỉnh Quảng Ngãi", "Tỉnh Đắk Lắk", "Tỉnh Gia Lai", 
+    "Thành phố Đà Nẵng", "Tỉnh Quảng Ngãi", "Tỉnh Đắc Lắc", "Tỉnh Đắk Lắk", "Tỉnh Gia Lai", 
     "Tỉnh Khánh Hòa", "Tỉnh Lâm Đồng", "Thành phố Hồ Chí Minh", "Thành phố Đồng Nai", 
     "Tỉnh Tây Ninh", "Tỉnh Đồng Tháp", "Tỉnh Vĩnh Long", "Tỉnh An Giang", 
     "Thành phố Cần Thơ", "Tỉnh Cà Mau"
@@ -143,7 +145,7 @@ def get_hsmt_form_values(driver, notify_no, notify_version="00", bid_field="HH")
         pass
     return ""
 
-# 8. HÀM TẠO URL CHI TIẾT CHUẨN DẠNG CHUẨN CỦA MUA SẮM CÔNG V2
+# 8. HÀM TẠO URL CHI TIẾT CHUẨN V2
 def build_detail_url(item, code, notify_ver):
     notify_id = str(item.get("id") or item.get("notifyId") or "")
     plan_no = str(item.get("planNo") or item.get("khlcntNo") or "")
@@ -172,7 +174,7 @@ def build_detail_url(item, code, notify_ver):
 
 # 9. TRÍCH XUẤT THÔNG TIN TBMT ĐĂNG TRONG NGÀY
 def fetch_tbmt_today(driver):
-    print(f"-> Đang mở trình duyệt và khởi tạo Session Mua Sắm Công (Ngày {TODAY_STR})...")
+    print(f"-> Đang mở trình duyệt và khởi tạo Session Mua Sắm Công TBMT (Ngày {TODAY_STR})...")
     driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
     time.sleep(10)
 
@@ -272,8 +274,6 @@ def fetch_tbmt_today(driver):
                 
                 est_amount_raw = item.get("estAmount") or item.get("investTotal") or item.get("bidPrice")
                 formatted_amount = format_currency(est_amount_raw)
-                
-                # Bối cảnh tạo Link chi tiết V2 chuẩn
                 detail_url = build_detail_url(item, code, notify_ver)
 
                 raw_str = json.dumps(item, ensure_ascii=False).lower()
@@ -311,12 +311,12 @@ def fetch_tbmt_today(driver):
 
     return list(unique_matches.values())
 
-# 10. PHÂN TÍCH VỚI GEMINI AI
+# 10. PHÂN TÍCH VỚI GEMINI AI (ĐÃ CẬP NHẬT DÂN DANH SÁCH MODEL MỚI CHỐNG LỖI 404)
 def analyze_with_gemini(candidates):
     if not candidates or not GEMINI_API_KEY:
         return candidates
 
-    target_models = ["gemini-2.0-flash", "gemini-1.5-flash"]
+    target_models = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash-exp"]
     
     try:
         from google import genai
@@ -324,12 +324,12 @@ def analyze_with_gemini(candidates):
         
         prompt = f"""
 Bạn là chuyên gia phân tích dữ liệu đấu thầu Y tế.
-Dưới đây là danh sách các Thông báo mời thầu (TBMT) phát hành trong ngày {TODAY_STR} đã lọc theo địa phương và 12 từ khóa y tế.
+Dưới đây là danh sách các Thông báo mời thầu (TBMT) phát hành trong ngày {TODAY_STR} đã lọc theo địa phương và 19 từ khóa y tế.
 
 Yêu cầu:
 1. Giữ nguyên toàn bộ các gói thầu trong danh sách đầu vào.
 2. Viết 1 câu tóm tắt ngắn gọn lý do phù hợp hoặc mặt hàng chính trong gói thầu.
-3. Trả về đúng mảng JSON chứa các object: "code", "notify_ver", "title", "amount", "investor", "province", "matched_kw", "location", "detail_url", "reason".
+3. Trả về đúng mảng JSON chứa các object đầy đủ thuộc tính và thêm "reason".
 
 Danh sách:
 {json.dumps(candidates, ensure_ascii=False, indent=2)}
@@ -342,8 +342,8 @@ Chỉ trả về chuỗi JSON thuần túy (không kèm markdown).
                     model=model_name,
                     contents=prompt
                 )
-                content = response.text.strip()
-                if content:
+                if response and response.text:
+                    content = response.text.strip()
                     break
             except Exception:
                 continue
@@ -356,20 +356,28 @@ Chỉ trả về chuỗi JSON thuần túy (không kèm markdown).
         if content.endswith("```"): content = content[:-3]
         return json.loads(content.strip())
     except Exception as e:
-        print(f"[THÔNG BÁO AI] {e}")
-        return candidates
+        print(f"[CẢNH BÁO AI GOOGLE-GENAI] {e} -> Giữ dữ liệu gốc.")
+    
+    return candidates
 
-# 11. GỬI EMAIL BÁO CÁO (ĐƯỜNG LINK FULL PARAM V2)
+# 11. GỬI EMAIL BÁO CÁO (ĐÃ LÀM SẠCH CHUỖI MULTI-EMAIL CHỐNG LỖI RFC 5321)
 def send_email_report(matched_list):
     if not RECEIVER_EMAIL:
         print("[LỖI CẤU HÌNH] Chưa khai báo email nhận.")
         return
 
+    receiver_list = [e.strip() for e in RECEIVER_EMAIL.replace("\n", "").split(",") if e.strip()]
+    if not receiver_list:
+        print("[LỖI CẤU HÌNH] Danh sách email nhận không hợp lệ.")
+        return
+
+    email_subject = f"[TBMT TBYT - Địa bàn phụ trách] Báo cáo gói thầu ngày {TODAY_STR}"
+
     if not matched_list:
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h3>
-            <p>Hệ thống đã quét dữ liệu từ 00h00 ngày {TODAY_STR} đến thời điểm hiện tại nhưng chưa phát hiện gói thầu mới khớp 12 từ khóa y tế tại 14 địa phương theo dõi.</p>
+            <p>Hệ thống đã quét dữ liệu từ 00h00 ngày {TODAY_STR} đến thời điểm hiện tại nhưng chưa phát hiện gói thầu mới khớp 19 từ khóa y tế tại 14 địa phương theo dõi.</p>
         </div>
         """
     else:
@@ -403,7 +411,7 @@ def send_email_report(matched_list):
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h2 style="color: #0275d8;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h2>
-            <p>Đã lọc phát hiện <b>{len(matched_list)}</b> gói thầu Y tế phát hành từ 00h00 ngày hôm nay ({TODAY_STR}) thuộc địa phương theo dõi:</p>
+            <p>Đã lọc phát hiện <b>{len(matched_list)}</b> gói thầu Y tế phát hành từ 00h00 ngày hôm nay ({TODAY_STR}) thuộc địa bàn phụ trách:</p>
             <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; border-color: #ddd;">
                 <tr style="background-color: #fff2e6;">
                     <th align="center">STT</th>
@@ -424,15 +432,15 @@ def send_email_report(matched_list):
 
     if SENDER_EMAIL and SENDER_PASSWORD:
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"[TBMT TBYT - Địa bàn phụ trách] Báo cáo gói thầu ngày {TODAY_STR}"
+        msg["Subject"] = email_subject
         msg["From"] = SENDER_EMAIL
-        msg["To"] = RECEIVER_EMAIL
+        msg["To"] = ", ".join(receiver_list)
         msg.attach(MIMEText(html_body, "html"))
         try:
             with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
                 server.login(SENDER_EMAIL, SENDER_PASSWORD)
-                server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, msg.as_string())
-            print(f"[SUCCESS] Đã gửi báo cáo TBMT thành công tới email: {RECEIVER_EMAIL}!")
+                server.sendmail(SENDER_EMAIL, receiver_list, msg.as_string())
+            print(f"[SUCCESS] Đã gửi báo cáo TBMT thành công tới các email: {', '.join(receiver_list)}!")
         except Exception as e:
             print(f"[LỖI GỬI EMAIL SMTP] {e}")
 
