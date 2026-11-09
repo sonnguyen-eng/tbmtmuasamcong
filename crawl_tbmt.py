@@ -11,7 +11,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 
-# 1. CẤU HÌNH BIẾN MÔI TRƯỜNG & DANH SÁCH 14 TỪ KHÓA Y TẾ
+# 1. CẤU HÌNH BIẾN MÔI TRƯỜNG & DANH SÁCH 14 TỪ KHÓA Y TẾ CHUẨN
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
@@ -41,19 +41,23 @@ def init_driver():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     return driver
 
-# 3. TRUY VẤN API SMART SEARCH QUA CONTEXT TRÌNH DUYỆT BẰNG JS FETCH
-def fetch_tbmt_by_smart_search(driver):
+# 3. TRUY VẤN API SMART SEARCH SỬ DỤNG TOKEN & PAYLOAD CHUẨN TỪ CURL
+def fetch_tbmt_by_smart_search_curl(driver):
     print("-> Đang mở trình duyệt và khởi tạo Session Mua Sắm Công...")
     driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
-    time.sleep(8) # Chờ Liferay Portal khởi tạo xong Token & Cookie
+    time.sleep(8) # Chờ Liferay Portal khởi tạo Cookie & Token
 
     unique_matches = {}
 
+    # Đoạn mã JS thực thi fetch đúng cấu trúc cURL từ trình duyệt
     js_fetch_search = """
     var callback = arguments[arguments.length - 1];
     var kw = arguments[0];
     
-    fetch('/o/egp-portal-contractor-selection-v2/services/smart/search', {
+    // Đọc token từ URL trình duyệt nếu có hoặc gọi trực tiếp qua service
+    let searchUrl = '/o/egp-portal-contractor-selection-v2/services/smart/search';
+    
+    fetch(searchUrl, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -67,7 +71,10 @@ def fetch_tbmt_by_smart_search(driver):
                 keyWord: kw,
                 matchType: "all-1",
                 matchFields: ["notifyNo", "bidName"],
-                filters: [{ fieldName: "type", searchType: "in", fieldValues: ["es-notify-contractor"] }]
+                filters: [
+                    { fieldName: "type", searchType: "in", fieldValues: ["es-notify-contractor"] },
+                    { fieldName: "caseKHKQ", searchType: "not_in", fieldValues: ["1"] }
+                ]
             }]
         }])
     })
@@ -94,7 +101,7 @@ def fetch_tbmt_by_smart_search(driver):
                 title = str(item.get("bidName") or item.get("name") or item.get("title") or "")
                 investor = str(item.get("procuringEntityName") or item.get("investorName") or "")
                 
-                # Deep scan text bao gồm chuỗi escape formValue
+                # Deep-scan text bao gồm toàn bộ chuỗi escape formValue
                 raw_str = json.dumps(item, ensure_ascii=False).lower()
                 form_val = item.get("formValue")
                 if form_val and isinstance(form_val, str):
@@ -163,7 +170,7 @@ def send_email_report(matched_list, raw_count):
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h3>
-            <p>Hệ thống đã truy vấn thành công dữ liệu nhưng chưa phát hiện gói thầu mới khớp 14 từ khóa theo dõi.</p>
+            <p>Hệ thống đã truy vấn thành công dữ liệu từ Mua Sắm Công nhưng chưa phát hiện gói thầu mới khớp 14 từ khóa theo dõi.</p>
         </div>
         """
     else:
@@ -229,7 +236,7 @@ def main():
     print(f"=== CRAWL & BÓC TÁCH SÂU TBMT SELENIUM SMART SEARCH - NGÀY {TODAY_STR} ===")
     driver = init_driver()
     try:
-        matched_list = fetch_tbmt_by_smart_search(driver)
+        matched_list = fetch_tbmt_by_smart_search_curl(driver)
         final_matches = analyze_with_gemini(matched_list)
         send_email_report(final_matches, len(matched_list))
     finally:
