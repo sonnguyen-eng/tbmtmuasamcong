@@ -18,12 +18,13 @@ SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", "").strip() or SENDER_EMAIL
 
 KEYWORDS = [
-    "nội soi", "Bàn mổ", "đèn mổ", "hệ thống khí y tế", "vận chuyển mẫu", "ERCP",
+    "nội soi", "nội soi tiêu hóa", "nội soi khí phế quản",
+    "Bàn mổ", "đèn mổ", "hệ thống khí y tế", "vận chuyển mẫu", "ERCP",
     "Monitor theo dõi bệnh nhân", "Máy hấp tiệt trùng", "Nhiệt độ thấp",
     "máy gây mê giúp thở", "Bơm tiêm điện", "máy truyền dịch"
 ]
 
-# 2. DANH SÁCH 14 TỈNH / THÀNH PHỐ MỤC TIÊU (CHUẨN HÓA THÀNH PHỐ ĐỒNG NAI)
+# 2. DANH SÁCH 14 TỈNH / THÀNH PHỐ MỤC TIÊU
 TARGET_LOCATIONS = [
     "Thành phố Đà Nẵng", "Tỉnh Quảng Ngãi", "Tỉnh Đắk Lắk", "Tỉnh Gia Lai", 
     "Tỉnh Khánh Hòa", "Tỉnh Lâm Đồng", "Thành phố Hồ Chí Minh", "Thành phố Đồng Nai", 
@@ -32,7 +33,10 @@ TARGET_LOCATIONS = [
 ]
 
 TZ_VN = timezone(timedelta(hours=7))
-TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
+NOW_VN = datetime.now(TZ_VN)
+TODAY_STR = NOW_VN.strftime("%d/%m/%Y")
+TODAY_DATE_ONLY = NOW_VN.date() # Lấy mốc ngày hôm nay (00:00:00)
+
 BASE_DOMAIN = "muasamcong.mof.gov.vn"
 
 # 3. KHỞI TẠO CHROME HEADLESS
@@ -48,16 +52,30 @@ def init_driver():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     return driver
 
-# 4. HÀM KIỂM TRA & CHUẨN HÓA TỈNH / THÀNH PHỐ
+# 4. HÀM KIỂM TRA THỜI GIAN ĐĂNG TẢI (CHỈ LẤY TỪ 00H00 NGÀY HÔM NAY)
+def is_published_today(item):
+    pub_date_str = item.get("publicDate") or item.get("originalPublicDate") or ""
+    if not pub_date_str:
+        return True # Nối tầng nếu khuyết trường ngày
+    
+    try:
+        # Chuỗi định dạng ISO từ API: "2026-11-09T13:54:02.651"
+        clean_date_str = pub_date_str.split(".")[0].replace("Z", "")
+        dt_obj = datetime.strptime(clean_date_str, "%Y-%m-%dT%H:%M:%S")
+        
+        # So sánh ngày đăng với ngày hôm nay theo giờ VN
+        return dt_obj.date() == TODAY_DATE_ONLY
+    except Exception:
+        return True
+
+# 5. HÀM KIỂM TRA & CHUẨN HÓA TỈNH / THÀNH PHỐ
 def check_location(item, raw_str):
     found_locs = []
     
-    # Chuẩn hóa chuỗi tìm kiếm gọn nhẹ
     investor = str(item.get("investorName") or item.get("procuringEntityName") or "").lower()
     title = str(item.get("bidName") or "").lower()
     search_text = f"{investor} {title} {raw_str}"
 
-    # 1. Kiểm tra mảng locations cấu trúc từ API
     locations_arr = item.get("locations", [])
     if isinstance(locations_arr, list):
         for loc in locations_arr:
@@ -66,27 +84,23 @@ def check_location(item, raw_str):
                 dist_name = loc.get("districtName", "")
                 search_text += f" {prov_name} {dist_name}".lower()
 
-    # 2. Khớp với danh sách 14 Tỉnh / TP
     for target in TARGET_LOCATIONS:
-        # Tách từ khóa tên tỉnh/TP cơ bản để so sánh (ví dụ: "đồng nai", "đà nẵng")
         clean_kw = target.replace("Thành phố ", "").replace("Tỉnh ", "").lower()
-        if clean_kw in search_text or (clean_kw == "đắk lắk" and "đắc lắc" in search_text):
+        if clean_kw in search_text or (clean_kw == "đắc lắc" and "đắc lắc" in search_text):
             found_locs.append(target)
 
-    # Đảm bảo khu vực Đồng Nai luôn trả về duy nhất "Thành phố Đồng Nai"
     normalized_locs = list(set(found_locs))
     if any("đồng nai" in loc.lower() for loc in normalized_locs):
         normalized_locs = [loc if "đồng nai" not in loc.lower() else "Thành phố Đồng Nai" for loc in normalized_locs]
 
     return list(set(normalized_locs))
 
-# 5. TRÍCH XUẤT DỮ LIỆU SMART SEARCH CÓ DÙNG TOKEN
+# 6. TRÍCH XUẤT DỮ LIỆU VỚI BỘ LỌC NGÀY HÔM NAY
 def fetch_tbmt_by_smart_search_curl(driver):
-    print("-> Đang mở trình duyệt và khởi tạo Session Mua Sắm Công...")
+    print(f"-> Đang mở trình duyệt và khởi tạo Session Mua Sắm Công (Quét TBMT đăng ngày {TODAY_STR})...")
     driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
     time.sleep(10)
 
-    # Trích xuất Token bảo mật động từ Session
     js_get_token = """
     let token = '';
     let entries = window.performance.getEntriesByType('resource');
@@ -165,6 +179,10 @@ def fetch_tbmt_by_smart_search_curl(driver):
             for item in data_list:
                 if not isinstance(item, dict):
                     continue
+                
+                # BỘ LỌC THỜI GIAN: Bỏ qua các TBMT không đăng trong ngày hôm nay
+                if not is_published_today(item):
+                    continue
                     
                 code = str(item.get("notifyNo") or item.get("notifyNoStand") or item.get("bidNo") or item.get("id") or "")
                 
@@ -176,15 +194,13 @@ def fetch_tbmt_by_smart_search_curl(driver):
                     
                 investor = str(item.get("investorName") or item.get("procuringEntityName") or "")
                 
-                # Deep-scan text bao gồm toàn bộ thuộc tính & formValue
                 raw_str = json.dumps(item, ensure_ascii=False).lower()
                 form_val = item.get("formValue")
                 if form_val and isinstance(form_val, str):
                     raw_str += " " + form_val.lower()
 
-                # LỌC 1: Khớp từ khóa Y tế
+                # LỌC TỪ KHÓA & ĐỊA PHƯƠNG
                 if kw.lower() in raw_str:
-                    # LỌC 2: Khớp Địa phương (Chỉ nhận diện "Thành phố Đồng Nai")
                     matched_province = check_location(item, raw_str)
                     if matched_province:
                         matched_in_kw += 1
@@ -199,7 +215,7 @@ def fetch_tbmt_by_smart_search_curl(driver):
                                 "location": location_detail,
                                 "snippet": raw_str[:1200]
                             }
-            print(f"   + Server trả về {len(data_list)} bản ghi -> Khớp địa phương & từ khóa: {matched_in_kw} gói thầu.")
+            print(f"   + Server trả về {len(data_list)} bản ghi -> Khớp ngày {TODAY_STR}, địa phương & từ khóa: {matched_in_kw} gói thầu.")
             time.sleep(0.5)
         except Exception as e:
             print(f"[CẢNH BÁO FETCH] Từ khóa '{kw}': {e}")
@@ -207,7 +223,7 @@ def fetch_tbmt_by_smart_search_curl(driver):
 
     return list(unique_matches.values())
 
-# 6. PHÂN TÍCH VỚI GEMINI AI
+# 7. PHÂN TÍCH VỚI GEMINI AI
 def analyze_with_gemini(candidates):
     if not candidates or not GEMINI_API_KEY:
         return candidates
@@ -220,7 +236,7 @@ def analyze_with_gemini(candidates):
         
         prompt = f"""
 Bạn là chuyên gia phân tích dữ liệu đấu thầu Y tế.
-Dưới đây là danh sách các Thông báo mời thầu (TBMT) đã lọc theo địa phương và từ khóa y tế.
+Dưới đây là danh sách các Thông báo mời thầu (TBMT) phát hành trong ngày {TODAY_STR} đã lọc theo địa phương và từ khóa y tế.
 
 Yêu cầu:
 1. Giữ nguyên toàn bộ các gói thầu trong danh sách đầu vào.
@@ -255,7 +271,7 @@ Chỉ trả về chuỗi JSON thuần túy (không kèm markdown).
         print(f"[THÔNG BÁO AI] {e}")
         return candidates
 
-# 7. GỬI EMAIL BÁO CÁO
+# 8. GỬI EMAIL BÁO CÁO
 def send_email_report(matched_list):
     if not RECEIVER_EMAIL:
         print("[LỖI CẤU HÌNH] Chưa khai báo email nhận.")
@@ -265,7 +281,7 @@ def send_email_report(matched_list):
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h3>
-            <p>Hệ thống đã quét dữ liệu từ Mua Sắm Công nhưng chưa phát hiện gói thầu nào khớp 14 từ khóa y tế tại 14 tỉnh/thành phố theo dõi (bao gồm Thành phố Đồng Nai).</p>
+            <p>Hệ thống đã quét dữ liệu từ 00h00 ngày {TODAY_STR} đến hiện tại nhưng chưa phát hiện gói thầu mới khớp 14 từ khóa y tế tại 14 địa phương theo dõi.</p>
         </div>
         """
     else:
@@ -298,7 +314,7 @@ def send_email_report(matched_list):
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h2 style="color: #0275d8;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h2>
-            <p>Đã lọc phát hiện <b>{len(matched_list)}</b> gói thầu Y tế thuộc danh sách 14 địa phương theo dõi (bao gồm Thành phố Đồng Nai):</p>
+            <p>Đã lọc phát hiện <b>{len(matched_list)}</b> gói thầu Y tế đăng từ 00h00 ngày {TODAY_STR} thuộc 14 địa phương theo dõi:</p>
             <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; border-color: #ddd;">
                 <tr style="background-color: #fff2e6;">
                     <th align="center">STT</th>
@@ -331,7 +347,7 @@ def send_email_report(matched_list):
             print(f"[LỖI GỬI EMAIL SMTP] {e}")
 
 def main():
-    print(f"=== CRAWL & LỌC TBMT THEO TỈNH/THÀNH PHỐ - NGÀY {TODAY_STR} ===")
+    print(f"=== CRAWL & LỌC TBMT ĐĂNG TRONG NGÀY {TODAY_STR} ===")
     driver = init_driver()
     try:
         matched_list = fetch_tbmt_by_smart_search_curl(driver)
