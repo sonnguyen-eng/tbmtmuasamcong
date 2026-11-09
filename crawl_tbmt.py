@@ -10,7 +10,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from requests.adapters import HTTPAdapter
 
-# 1. TẮT CẢNH BÁO MÃ HÓA SSL CHO SERVER MUA SẮM CÔNG
+# 1. TẮT CẢNH BÁO SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class CustomSSLAdapter(HTTPAdapter):
@@ -25,7 +25,7 @@ class CustomSSLAdapter(HTTPAdapter):
         kwargs['ssl_context'] = ctx
         return super().init_poolmanager(*args, **kwargs)
 
-# 2. CẤU HÌNH BIẾN MÔI TRƯỜNG & ĐỦ 14 TỪ KHÓA CHUẨN Y TẾ
+# 2. CẤU HÌNH DỮ LIỆU & DANH SÁCH 14 TỪ KHÓA CHUẨN
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
@@ -42,20 +42,25 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 BASE_DOMAIN = "muasamcong.mof.gov.vn"
 
-# BƯỚC 1: LẤY DỮ LIỆU THÔ VỚI PAYLOAD "pageNumber" CHUỖI (CHỐNG LỖI HTTP 500)
+# 3. TRUY VẤN DỮ LIỆU CÓ HANDSHAKE KHỎI TẠO PHIÊN
 def fetch_tbmt_list_raw(session, max_pages=10):
     url = f"https://{BASE_DOMAIN}/o/egp-portal-contractor-selection-v2/services/lcnt_tbmcgtt_hsmt"
+    
+    # Giả lập hoàn chỉnh Request Header từ Browser
     headers = {
         "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
         "Content-Type": "application/json",
         "Origin": f"https://{BASE_DOMAIN}",
         "Referer": f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "X-Requested-With": "XMLHttpRequest"
     }
+    
     collected_items = []
     
     for page in range(max_pages):
-        # Đã fix: pageNumber dạng chuỗi "0", "1"... để ElasticSearch không bị HTTP 500
+        # Payload chuẩn ElasticSearch backend
         payload = {
             "pageSize": 50,
             "pageNumber": str(page),
@@ -64,7 +69,11 @@ def fetch_tbmt_list_raw(session, max_pages=10):
                 {
                     "index": "es-contractor-selection",
                     "filters": [
-                        {"fieldName": "type", "searchType": "in", "fieldValues": ["es-notify-contractor"]}
+                        {
+                            "fieldName": "type",
+                            "searchType": "in",
+                            "fieldValues": ["es-notify-contractor"]
+                        }
                     ]
                 }
             ]
@@ -75,7 +84,6 @@ def fetch_tbmt_list_raw(session, max_pages=10):
                 data = res.json()
                 data_list = []
                 
-                # Fix lỗi truy xuất mảng/object từ NotebookLM
                 if isinstance(data, dict):
                     data_list = data.get("result", {}).get("data", [])
                     if not data_list and isinstance(data.get("result"), list):
@@ -84,23 +92,34 @@ def fetch_tbmt_list_raw(session, max_pages=10):
                     data_list = data[0].get("result", {}).get("data", [])
 
                 if not data_list:
-                    print(f"-> Dừng phân trang tại trang {page}: Đã thu thập xong danh sách mới.")
+                    print(f"-> Dừng phân trang tại trang {page}: Đã thu thập hết dữ liệu mới.")
                     break
                     
                 collected_items.extend(data_list)
-                print(f" + Trang {page + 1}: Lấy thành công {len(data_list)} bản ghi (Tích lũy: {len(collected_items)}).")
+                print(f"   + Trang {page + 1}: Lấy thành công {len(data_list)} bản ghi (Tích lũy: {len(collected_items)}).")
                 if len(data_list) < 50:
                     break
             else:
                 print(f"[CẢNH BÁO MẠNG HTTP {res.status_code}] Trang {page}")
-            time.sleep(0.3)
+                # Nếu trang 0 gặp lỗi 500, thử fallback nhẹ phương thức query
+                if page == 0 and res.status_code == 500:
+                    print("   -> Thử lại trang 0 với payload thay thế...")
+                    alt_payload = {"pageSize": 50, "pageNumber": 0, "sort": "createdDate desc"}
+                    res_alt = session.post(url, json=alt_payload, headers=headers, timeout=25, verify=False)
+                    if res_alt.status_code == 200:
+                        data_alt = res_alt.json()
+                        data_list = data_alt.get("result", {}).get("data", []) if isinstance(data_alt, dict) else []
+                        if data_list:
+                            collected_items.extend(data_list)
+                            print(f"   + Lấy lại thành công trang 1: {len(data_list)} bản ghi.")
+            time.sleep(0.5)
         except Exception as e:
             print(f"[LỖI TRUY VẤN MẠNG] Trang {page}: {e}")
             continue
             
     return collected_items
 
-# BƯỚC 2: DEEP-SCAN TOÀN BỘ CẤU TRÚC JSON & CHUỖI ESCAPE FORMVALUE
+# 4. BÓC TÁCH SÂU JSON KÈM ESCAPE FORMVALUE
 def extract_searchable_text(item):
     try:
         raw_str = json.dumps(item, ensure_ascii=False).lower()
@@ -120,7 +139,6 @@ def pre_filter_candidates(raw_list):
         investor = str(item.get("procuringEntityName") or item.get("investorName") or "")
         full_text = extract_searchable_text(item)
         
-        # Quét 14 từ khóa (KHÔNG LOẠI TRỪ ỐNG SOI)
         matched_kw = [kw for kw in KEYWORDS if kw.lower() in full_text]
         if matched_kw and code not in unique_codes:
             unique_codes.add(code)
@@ -135,12 +153,11 @@ def pre_filter_candidates(raw_list):
             })
     return candidates
 
-# BƯỚC 3: PHÂN TÍCH VÀ BỔ SUNG LÝ DO TÓM TẮT BẰNG GEMINI AI (KHÔNG BỎ SÓT GÓI THẦU KHỚP)
+# 5. XỬ LÝ GEMINI AI (NẾU CÓ KEY)
 def analyze_with_gemini(candidates):
     if not candidates:
         return []
     if not GEMINI_API_KEY:
-        print("[THÔNG BÁO] Chưa cấu hình GEMINI_API_KEY. Dùng kết quả lọc từ khóa trực tiếp.")
         return candidates
 
     try:
@@ -149,23 +166,22 @@ def analyze_with_gemini(candidates):
         
         prompt = f"""
 Bạn là chuyên gia phân tích dữ liệu đấu thầu Y tế.
-Dưới đây là danh sách các Thông báo mời thầu (TBMT) đã khớp với danh mục từ khóa theo dõi: {json.dumps(KEYWORDS, ensure_ascii=False)}
+Dưới đây là danh sách các Thông báo mời thầu (TBMT) đã khớp với danh mục từ khóa: {json.dumps(KEYWORDS, ensure_ascii=False)}
 
 Yêu cầu:
-1. Giữ nguyên tất cả các gói thầu trong danh sách đầu vào.
-2. Với mỗi gói thầu, viết 1 câu tóm tắt ngắn gọn lý do phù hợp hoặc thiết bị chính xuất hiện trong gói thầu.
+1. Giữ nguyên toàn bộ các gói thầu trong danh sách đầu vào.
+2. Viết 1 câu tóm tắt ngắn gọn lý do phù hợp hoặc thiết bị chính xuất hiện trong gói thầu.
 3. Trả về đúng mảng JSON chứa các object:
    - "code": mã TBMT
    - "title": tên gói thầu
    - "investor": bên mời thầu
    - "matched_kw": danh sách từ khóa khớp
    - "location": vị trí khớp
-   - "reason": tóm tắt lý do/thiết bị từ AI
+   - "reason": tóm tắt thiết bị từ AI
 
 Danh sách:
 {json.dumps(candidates, ensure_ascii=False, indent=2)}
-
-Chỉ trả về chuỗi JSON thuần túy (không kèm codeblock markdown hay chữ thừa).
+Chỉ trả về chuỗi JSON thuần túy.
 """
         response = client.models.generate_content(
             model="gemini-2.5-flash",
@@ -173,19 +189,16 @@ Chỉ trả về chuỗi JSON thuần túy (không kèm codeblock markdown hay c
         )
         
         content = response.text.strip()
-        if content.startswith("```json"):
-            content = content[7:]
-        if content.startswith("```"):
-            content = content[3:]
-        if content.endswith("```"):
-            content = content[:-3]
+        if content.startswith("```json"): content = content[7:]
+        if content.startswith("```"): content = content[3:]
+        if content.endswith("```"): content = content[:-3]
         
         return json.loads(content.strip())
     except Exception as e:
         print(f"[THÔNG BÁO AI] {e}. Dùng kết quả quét từ khóa trực tiếp.")
         return candidates
 
-# BƯỚC 4: GỬI BÁO CÁO EMAIL QUA SMTP
+# 6. GỬI BÁO CÁO EMAIL
 def send_email_report(matched_list, raw_count):
     if not matched_list:
         html_body = f"""
@@ -259,10 +272,12 @@ def main():
     session = requests.Session()
     session.mount("https://", CustomSSLAdapter())
     
+    # Handshake 2 bước để thiết lập Cookie hợp lệ trên server Mua Sắm Công
     try:
         session.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index", timeout=15, verify=False)
-    except Exception:
-        pass
+        time.sleep(1)
+    except Exception as e:
+        print(f"[LỖI HANDSHAKE] {e}")
 
     raw_list = fetch_tbmt_list_raw(session, max_pages=10)
     candidates = pre_filter_candidates(raw_list)
