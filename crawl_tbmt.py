@@ -41,24 +41,26 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
 
-# 3. TRUY VẤN API SMART SEARCH (CHUẨN 100% THEO cURL F12 TRÌNH DUYỆT)
+# 3. TRUY VẤN API SMART SEARCH (KHỚP 100% THEO cURL F12 ANH SƠN PHÙ HỢP BACKEND V2)
 def fetch_tbmt_by_keyword(session, keyword):
     url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/smart/search"
     
+    # Headers chuẩn theo cURL thực tế
     headers = {
         "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
         "Content-Type": "application/json",
         "Origin": "https://muasamcong.mof.gov.vn",
         "Referer": "https://muasamcong.mof.gov.vn/web/guest/contractor-selection?render=index",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
     
     items_found = []
     kw_str = str(keyword).strip()
 
-    # Quét 4 trang cho mỗi từ khóa (200 gói thầu/từ khóa)
+    # Quét 4 trang cho mỗi từ khóa (tổng 200 gói thầu/từ khóa)
     for page in range(4):
-        # Payload chuẩn 100% trích xuất từ cURL F12 của anh Sơn
+        # Payload khớp chính xác 100% với cURL bash F12 từ máy anh Sơn
         payload = [
             {
                 "pageSize": 50,
@@ -113,7 +115,7 @@ def fetch_tbmt_by_keyword(session, keyword):
     return items_found
 
 
-# 4. CHUYỂN TOÀN BỘ NESTED JSON THÀNH STR ĐỂ DEEP-SEARCH HÀNG HÓA CHI TIẾT
+# 4. CHUYỂN TOÀN BỘ NESTED JSON THÀNH STR ĐỂ DEEP-SEARCH LOCAL
 def extract_full_searchable_text(item):
     try:
         return json.dumps(item, ensure_ascii=False).lower()
@@ -121,7 +123,7 @@ def extract_full_searchable_text(item):
         return ""
 
 
-# 5. TIẾN TRÌNH THỰC THI CHÍNH
+# 5. CHƯƠNG TRÌNH CHÍNH
 def main_tbmt():
     print(f"=== BẮT ĐẦU CRAWL VÀ BÓC TÁCH SÂU TBMT - NGÀY {TODAY_STR} ===")
     
@@ -144,10 +146,10 @@ def main_tbmt():
             
             full_text = extract_full_searchable_text(item)
             
-            # Quét sâu từ khóa trong toàn bộ dữ liệu chi tiết
+            # Quét sâu từ khóa trong toàn bộ dữ liệu JSON lồng nhau
             if kw.lower() in full_text:
                 if code and code not in unique_matches:
-                    location = "Tiêu đề" if kw.lower() in f"{code} {title}".lower() else "Chi tiết Hàng hóa / Bảng biểu"
+                    location = "Tiêu đề" if kw.lower() in f"{code} {title}".lower() else "Chi tiết Hàng hóa / Biểu mẫu"
                     unique_matches[code] = {
                         "code": code,
                         "title": title,
@@ -167,7 +169,7 @@ def main_tbmt():
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h3>
-            <p>Hệ thống đã kết nối thành công tới server Mua Sắm Công nhưng không tìm thấy TBMT nào phù hợp với danh mục 14 từ khóa theo dõi.</p>
+            <p>Hệ thống đã kết nối thành công tới server Mua Sắm Công nhưng chưa tìm thấy TBMT nào phù hợp với danh mục 14 từ khóa theo dõi.</p>
         </div>
         """
     else:
