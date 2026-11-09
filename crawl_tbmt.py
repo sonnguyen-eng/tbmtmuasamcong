@@ -64,19 +64,18 @@ def is_published_strictly_today(item):
     except Exception:
         return True
 
-# 5. HÀM ĐỊNH DẠNG GIÁ TRỊ GÓI THẦU SỐ THUẦN TÚY (VD: 110,440,000.00)
+# 5. HÀM ĐỊNH DẠNG GIÁ TRỊ GÓI THẦU DẠNG SỐ (VD: 110,440,000.00)
 def format_currency(val):
     if not val:
         return "0.00"
     try:
-        # Nếu dữ liệu trả về nằm trong list
         if isinstance(val, list) and len(val) > 0:
             val = val[0]
             
         num = float(val)
         if num == 0:
             return "0.00"
-        return f"{num:,.2f}" # Định dạng chuẩn 110,440,000.00
+        return f"{num:,.2f}"
     except Exception:
         return str(val)
 
@@ -144,7 +143,34 @@ def get_hsmt_form_values(driver, notify_no, notify_version="00", bid_field="HH")
         pass
     return ""
 
-# 8. TRÍCH XUẤT THÔNG TIN TBMT ĐĂNG TRONG NGÀY
+# 8. HÀM TẠO URL CHI TIẾT CHUẨN DẠNG CHUẨN CỦA MUA SẮM CÔNG V2
+def build_detail_url(item, code, notify_ver):
+    notify_id = str(item.get("id") or item.get("notifyId") or "")
+    plan_no = str(item.get("planNo") or item.get("khlcntNo") or "")
+    bid_form = str(item.get("bidForm") or "DTRR")
+    
+    url = (
+        f"https://{BASE_DOMAIN}/web/guest/contractor-selection?"
+        f"p_p_id=egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2"
+        f"&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view"
+        f"&_egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2_render=detail-v2"
+        f"&type=es-notify-contractor"
+        f"&stepCode=notify-contractor-step-1-tbmt"
+        f"&notifyNo={code}"
+        f"&notifyVersion={notify_ver}"
+    )
+    
+    if notify_id:
+        url += f"&id={notify_id}&notifyId={notify_id}"
+    if plan_no:
+        url += f"&planNo={plan_no}"
+    if bid_form:
+        url += f"&bidForm={bid_form}"
+        
+    url += "&processApply=LDT&bidMode=1_MTHS&isInternet=1"
+    return url
+
+# 9. TRÍCH XUẤT THÔNG TIN TBMT ĐĂNG TRONG NGÀY
 def fetch_tbmt_today(driver):
     print(f"-> Đang mở trình duyệt và khởi tạo Session Mua Sắm Công (Ngày {TODAY_STR})...")
     driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
@@ -244,9 +270,11 @@ def fetch_tbmt_today(driver):
                     
                 investor = str(item.get("investorName") or item.get("procuringEntityName") or "")
                 
-                # Bóc tách Dự toán / Giá gói thầu & Định dạng chuẩn số
                 est_amount_raw = item.get("estAmount") or item.get("investTotal") or item.get("bidPrice")
                 formatted_amount = format_currency(est_amount_raw)
+                
+                # Bối cảnh tạo Link chi tiết V2 chuẩn
+                detail_url = build_detail_url(item, code, notify_ver)
 
                 raw_str = json.dumps(item, ensure_ascii=False).lower()
 
@@ -272,6 +300,7 @@ def fetch_tbmt_today(driver):
                                 "province": ", ".join(matched_province),
                                 "matched_kw": ", ".join(matched_kws),
                                 "location": location_detail,
+                                "detail_url": detail_url,
                                 "snippet": raw_str[:1200]
                             }
             print(f"   + Server trả về {len(data_list)} bản ghi -> Khớp ngày {TODAY_STR}, địa phương & từ khóa: {matched_in_kw} gói thầu.")
@@ -282,7 +311,7 @@ def fetch_tbmt_today(driver):
 
     return list(unique_matches.values())
 
-# 9. PHÂN TÍCH VỚI GEMINI AI
+# 10. PHÂN TÍCH VỚI GEMINI AI
 def analyze_with_gemini(candidates):
     if not candidates or not GEMINI_API_KEY:
         return candidates
@@ -300,7 +329,7 @@ Dưới đây là danh sách các Thông báo mời thầu (TBMT) phát hành tr
 Yêu cầu:
 1. Giữ nguyên toàn bộ các gói thầu trong danh sách đầu vào.
 2. Viết 1 câu tóm tắt ngắn gọn lý do phù hợp hoặc mặt hàng chính trong gói thầu.
-3. Trả về đúng mảng JSON chứa các object: "code", "notify_ver", "title", "amount", "investor", "province", "matched_kw", "location", "reason".
+3. Trả về đúng mảng JSON chứa các object: "code", "notify_ver", "title", "amount", "investor", "province", "matched_kw", "location", "detail_url", "reason".
 
 Danh sách:
 {json.dumps(candidates, ensure_ascii=False, indent=2)}
@@ -330,7 +359,7 @@ Chỉ trả về chuỗi JSON thuần túy (không kèm markdown).
         print(f"[THÔNG BÁO AI] {e}")
         return candidates
 
-# 10. GỬI EMAIL BÁO CÁO (ĐƯỜNG LINK CHUẨN V2 & GIÁ TRỊ DẠNG SỐ)
+# 11. GỬI EMAIL BÁO CÁO (ĐƯỜNG LINK FULL PARAM V2)
 def send_email_report(matched_list):
     if not RECEIVER_EMAIL:
         print("[LỖI CẤU HÌNH] Chưa khai báo email nhận.")
@@ -347,7 +376,6 @@ def send_email_report(matched_list):
         rows = ""
         for idx, item in enumerate(matched_list, 1):
             code = item.get("code", "")
-            notify_ver = item.get("notify_ver", "00")
             title = item.get("title", "")
             amount = item.get("amount", "0.00")
             investor = item.get("investor", "")
@@ -355,9 +383,7 @@ def send_email_report(matched_list):
             location = item.get("location", "Biểu mẫu / Hàng hóa")
             reason = item.get("reason") or "Khớp từ khóa theo dõi y tế trong Biểu mẫu 10B/HSMT"
             matched_kw = item.get("matched_kw", "")
-                
-            # ĐƯỜNG LINK CHUẨN ĐẾN TRANG CHI TIẾT TBMT MUA SẮM CÔNG V2
-            link = f"https://{BASE_DOMAIN}/web/guest/contractor-selection?p_p_id=egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view&_egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2_render=detail&notifyNo={code}&notifyVersion={notify_ver}"
+            detail_url = item.get("detail_url") or f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index"
             
             rows += f"""
             <tr>
@@ -370,7 +396,7 @@ def send_email_report(matched_list):
                 <td align="center"><span style="background-color: #ffffcc; padding: 3px 6px; border-radius: 3px;">{matched_kw}</span></td>
                 <td align="center"><i>{location}</i></td>
                 <td><small style="color: #333;">{reason}</small></td>
-                <td align="center"><a href="{link}" target="_blank" style="color: #0275d8; font-weight: bold;">Xem ngay</a></td>
+                <td align="center"><a href="{detail_url}" target="_blank" style="color: #0275d8; font-weight: bold;">Xem ngay</a></td>
             </tr>
             """
             
