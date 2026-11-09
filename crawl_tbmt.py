@@ -25,7 +25,7 @@ class CustomSSLAdapter(HTTPAdapter):
         kwargs['ssl_context'] = ctx
         return super().init_poolmanager(*args, **kwargs)
 
-# 2. CẤU HÌNH DỮ LIỆU & 14 TỪ KHÓA
+# 2. CẤU HÌNH DỮ LIỆU & 14 TỪ KHÓA MỚI (ĐÃ BỎ NÓI VỀ 'ỐNG SOI')
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
 RECEIVER_EMAIL = SENDER_EMAIL
@@ -36,13 +36,16 @@ KEYWORDS = [
     "Monitor theo dõi bệnh nhân", "Máy hấp tiệt trùng", "Nhiệt độ thấp", 
     "máy gây mê giúp thở", "Bơm tiêm điện", "máy truyền dịch"
 ]
+
 TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
 
-# 3. TRUY VẤN DỮ LIỆU TBMT QUA SMART SEARCH (DẠNG OBJECT JSON chuẩn HTTP 200)
+# 3. TRUY VẤN DỮ LIỆU TBMT QUA ENDPOINT F12 CHUẨN XÁC
 def fetch_all_tbmt_raw(session):
-    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/smart/search"
+    # Endpoint chuẩn từ F12 trong PDF TBMT trang 3/5
+    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/lcnt_tbmcgtt_hsmt"
+    
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json;charset=UTF-8",
@@ -54,30 +57,39 @@ def fetch_all_tbmt_raw(session):
     collected_items = []
     # Quét 10 trang dữ liệu mới nhất (500 gói thầu)
     for page in range(10):
-        # Payload dạng Object JSON đơn cho TBMT (không dùng mảng [])
+        # Payload chuẩn F12: pageNumber và pageSize dạng Integer, query là mảng rỗng
         payload = {
             "pageSize": 50,
             "pageNumber": page,
-            "query": [
-                {
-                    "index": "es-tbmt",
-                    "matchType": "all-1",
-                    "matchFields": ["notifyNo", "bidName"]
-                },
-                {
-                    "name": "type",
-                    "searchType": "in",
-                    "fieldValues": ["es-tbmt"]
-                }
-            ]
+            "sort": "createdDate desc",
+            "query": []
         }
         try:
             res = session.post(url, json=payload, headers=headers, timeout=25, verify=False)
+            
+            # Nếu endpoint lcnt_tbmcgtt_hsmt bị hạn chế, fallback sang endpoint smart/search
+            if res.status_code != 200:
+                url_fallback = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/smart/search"
+                payload_fallback = {
+                    "pageSize": 50,
+                    "pageNumber": page,
+                    "query": [
+                        {
+                            "index": "es-tbmt",
+                            "matchType": "all-1",
+                            "matchFields": ["notifyNo", "bidName"]
+                        }
+                    ]
+                }
+                res = session.post(url_fallback, json=payload_fallback, headers=headers, timeout=25, verify=False)
+
             if res.status_code == 200:
                 data = res.json()
                 data_list = []
                 if isinstance(data, dict):
                     data_list = data.get("result", {}).get("data", [])
+                    if not data_list and isinstance(data.get("result"), list):
+                        data_list = data.get("result", [])
                 elif isinstance(data, list) and len(data) > 0:
                     data_list = data[0].get("result", {}).get("data", [])
 
@@ -101,7 +113,7 @@ def fetch_all_tbmt_raw(session):
     return collected_items
 
 
-# 4. TRÍCH XUẤT TOÀN BỘ VĂN BẢN ĐỂ QUÉT SÂU DANH MỤC HÀNG HÓA
+# 4. CHUYỂN TOÀN BỘ NESTED JSON THÀNH CHUỖI ĐỂ DEEP SEARCH DANH MỤC HÀNG HÓA
 def extract_full_searchable_text(item):
     try:
         return json.dumps(item, ensure_ascii=False).lower()
@@ -109,7 +121,7 @@ def extract_full_searchable_text(item):
         return ""
 
 
-# 5. THỰC THI CHƯƠNG TRÌNH CHÍNH
+# 5. CHƯƠNG TRÌNH CHÍNH
 def main_tbmt():
     print(f"=== BẮT ĐẦU CRAWL VÀ BÓC TÁCH SÂU TBMT - NGÀY {TODAY_STR} ===")
     
@@ -120,7 +132,7 @@ def main_tbmt():
     raw_items = fetch_all_tbmt_raw(session)
     print(f"-> Thu thập thành công tổng cộng: {len(raw_items)} bản ghi thô từ máy chủ.")
     
-    # Bước 2: Bóc tách và đối soát 14 từ khóa
+    # Bước 2: Bóc tách và đối soát 14 từ khóa (KHÔNG LOẠI TRỪ ỐNG SOI)
     unique_matches = {}
     for item in raw_items:
         code = str(item.get("bidNo") or item.get("notifyNo") or item.get("code") or item.get("id") or "")
@@ -129,11 +141,7 @@ def main_tbmt():
         
         full_text = extract_full_searchable_text(item)
         
-        # Bỏ qua gói chứa từ khóa loại trừ "ống soi"
-        if EXCLUDE_KEYWORD.lower() in full_text:
-            continue
-            
-        # Lọc 14 từ khóa trong toàn bộ văn bản JSON
+        # Quét 14 từ khóa trong toàn bộ văn bản JSON (Search sâu)
         for kw in KEYWORDS:
             if kw.lower() in full_text:
                 if code and code not in unique_matches:
