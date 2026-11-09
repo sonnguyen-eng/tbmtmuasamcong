@@ -41,7 +41,7 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
 
-# 3. TRUY VẤN DỮ LIỆU TBMT THÔ THEO PAYLOAD cURL F12 XÁC THỰC
+# 3. TRUY VẤN DỮ LIỆU TBMT THÔ (CHẠY PHÂN TRANG TỪ 0 ĐỂ LẤY DỮ LIỆU)
 def fetch_tbmt_list_raw(session):
     url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/popular-keyword/get-list"
     
@@ -55,10 +55,10 @@ def fetch_tbmt_list_raw(session):
     
     collected_items = []
     
-    # Quét 5 trang dữ liệu TBMT (mỗi trang 100 gói thầu = 500 gói thầu mới nhất)
-    for page in range(1, 6):
+    # Phân trang chuẩn bắt đầu từ 0
+    for page in range(0, 10):
         payload = {
-            "pageSize": 100,
+            "pageSize": 50,
             "pageNumber": page,
             "sort": "createdDate desc",
             "popularKeyword": {
@@ -78,12 +78,12 @@ def fetch_tbmt_list_raw(session):
                     data_list = data[0].get("result", {}).get("data", [])
 
                 if not data_list:
-                    print(f"-> Hoàn tất lấy danh sách tại trang {page}.")
+                    print(f"-> Dừng phân trang tại trang {page}: Đã lấy hết gói thầu mới.")
                     break
                 
                 collected_items.extend(data_list)
                 print(f"   + Lấy thành công trang {page}: thêm {len(data_list)} TBMT (Tích lũy: {len(collected_items)} bản ghi).")
-                if len(data_list) < 100:
+                if len(data_list) < 50:
                     break
             else:
                 print(f"[CẢNH BÁO MẠNG HTTP {res.status_code}] Trang {page}")
@@ -96,7 +96,7 @@ def fetch_tbmt_list_raw(session):
     return collected_items
 
 
-# 4. TRÍCH XUẤT TOÀN BỘ CHUỖI CẤU TRÚC JSON KÈM ESCAPE FORMVALUE ĐỂ DEEP-SEARCH
+# 4. CHUYỂN TOÀN BỘ NESTED JSON KÈM ESCAPE FORMVALUE THÀNH CHUỖI ĐỂ DEEP-SEARCH
 def extract_full_searchable_text(item):
     try:
         raw_str = json.dumps(item, ensure_ascii=False).lower()
