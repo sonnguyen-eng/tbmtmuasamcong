@@ -41,11 +41,11 @@ def init_driver():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     return driver
 
-# 3. TRÍCH XUẤT TOKEN ĐỘNG VÀ TRUY VẤN DỮ LIỆU CHUẨN
+# 3. TRÍCH XUẤT DỮ LIỆU CHUẨN TỪ ENDPOINT SMART SEARCH CHỨA PAGE.CONTENT
 def fetch_tbmt_by_smart_search_curl(driver):
     print("-> Đang mở trình duyệt và khởi tạo Session Mua Sắm Công...")
     driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
-    time.sleep(10) # Chờ Liferay Portal khởi tạo Cookie & Token URL
+    time.sleep(10)
 
     # Trích xuất Token bảo mật động sinh ra trên trình duyệt
     js_get_token = """
@@ -63,7 +63,10 @@ def fetch_tbmt_by_smart_search_curl(driver):
     return token;
     """
     token_val = driver.execute_script(js_get_token)
-    print(f"-> Token bảo mật trích xuất từ Session: {token_val[:20]}..." if token_val else "-> Không tìm thấy Token động, thử gọi endpoint chuẩn...")
+    if token_val:
+        print(f"-> Token bảo mật trích xuất từ Session: {token_val[:20]}...")
+    else:
+        print("-> Đang dùng URL service mặc định...")
 
     unique_matches = {}
 
@@ -109,19 +112,35 @@ def fetch_tbmt_by_smart_search_curl(driver):
             res = driver.execute_async_script(js_fetch_search, kw, token_val)
             data_list = []
             
+            # Trích xuất chính xác từ thuộc tính page.content
             if isinstance(res, list) and len(res) > 0:
-                data_list = res[0].get("result", {}).get("data", [])
+                first_item = res[0]
+                if isinstance(first_item, dict):
+                    data_list = first_item.get("page", {}).get("content", [])
             elif isinstance(res, dict):
-                data_list = res.get("result", {}).get("data", [])
+                data_list = res.get("page", {}).get("content", [])
+
+            if not isinstance(data_list, list):
+                data_list = []
 
             print(f"   + Server trả về: {len(data_list)} bản ghi cho từ khóa '{kw}'.")
 
             for item in data_list:
-                code = str(item.get("bidNo") or item.get("notifyNo") or item.get("code") or item.get("id") or "")
-                title = str(item.get("bidName") or item.get("name") or item.get("title") or "")
-                investor = str(item.get("procuringEntityName") or item.get("investorName") or "")
+                if not isinstance(item, dict):
+                    continue
+                    
+                code = str(item.get("notifyNo") or item.get("notifyNoStand") or item.get("bidNo") or item.get("id") or "")
                 
-                # Deep-scan bao gồm chuỗi escape formValue
+                # Sửa xử lý bidName là mảng chuỗi
+                bid_name_raw = item.get("bidName")
+                if isinstance(bid_name_raw, list) and len(bid_name_raw) > 0:
+                    title = str(bid_name_raw[0])
+                else:
+                    title = str(bid_name_raw or item.get("name") or "")
+                    
+                investor = str(item.get("investorName") or item.get("procuringEntityName") or "")
+                
+                # Deep-scan bao gồm toàn bộ thuộc tính và chuỗi escape formValue
                 raw_str = json.dumps(item, ensure_ascii=False).lower()
                 form_val = item.get("formValue")
                 if form_val and isinstance(form_val, str):
@@ -138,7 +157,7 @@ def fetch_tbmt_by_smart_search_curl(driver):
                             "location": location,
                             "snippet": raw_str[:1200]
                         }
-            time.sleep(1)
+            time.sleep(0.5)
         except Exception as e:
             print(f"[CẢNH BÁO FETCH] Từ khóa '{kw}': {e}")
             continue
