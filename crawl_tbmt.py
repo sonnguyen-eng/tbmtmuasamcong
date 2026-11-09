@@ -41,9 +41,9 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
 
-# 3. TRUY VẤN API TBMT THEO TỪNG TỪ KHÓA (PAYLOAD CHUẨN F12 CHỐNG HTTP 400)
+# 3. TRUY VẤN API TBMT VỚI PAYLOAD CHUẨN F12 SEARCH (CHÍNH XÁC WEB MUA SẮM CÔNG)
 def fetch_tbmt_by_keyword(session, keyword):
-    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/lcnt_tbmcgtt_hsmt"
+    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/smart/search"
     
     headers = {
         "Accept": "application/json, text/plain, */*",
@@ -54,37 +54,30 @@ def fetch_tbmt_by_keyword(session, keyword):
     }
     
     items_found = []
-    # Quét 4 trang cho mỗi từ khóa (tương đương 200 bản ghi/từ khóa)
+    kw_str = str(keyword).strip()
+
+    # Quét 4 trang đầu tiên cho mỗi từ khóa (200 gói thầu/từ khóa)
     for page in range(4):
+        # Payload Object JSON chuẩn F12 của Mua Sắm Công V2
         payload = {
             "pageSize": 50,
             "pageNumber": page,
-            "sort": "createdDate desc",
-            "keySearch": str(keyword).strip(),
             "query": [
                 {
                     "index": "es-tbmt",
-                    "keySearch": str(keyword).strip()
+                    "matchType": "all-1",
+                    "matchFields": ["notifyNo", "bidName"],
+                    "keySearch": kw_str
+                },
+                {
+                    "name": "type",
+                    "searchType": "in",
+                    "fieldValues": ["es-tbmt"]
                 }
             ]
         }
         try:
             res = session.post(url, json=payload, headers=headers, timeout=25, verify=False)
-            
-            # Nếu Endpoint chính từ chối, chuyển sang Endpoint thông dụng
-            if res.status_code != 200:
-                url_fb = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/popular-keyword/get-list"
-                payload_fb = {
-                    "pageSize": 50,
-                    "pageNumber": page,
-                    "sort": "createdDate desc",
-                    "popularKeyword": {
-                        "keySearch": str(keyword).strip(),
-                        "status": 1
-                    }
-                }
-                res = session.post(url_fb, json=payload_fb, headers=headers, timeout=25, verify=False)
-
             if res.status_code == 200:
                 data = res.json()
                 data_list = []
@@ -104,7 +97,7 @@ def fetch_tbmt_by_keyword(session, keyword):
             else:
                 print(f"[CẢNH BÁO HTTP {res.status_code}] Từ khóa '{keyword}' tại trang {page}")
                 break
-            time.sleep(0.2)
+            time.sleep(0.3)
         except Exception as e:
             print(f"[LỖI API] Từ khóa '{keyword}' trang {page}: {e}")
             break
@@ -120,7 +113,7 @@ def extract_full_searchable_text(item):
         return ""
 
 
-# 5. LỒNG TIẾN TRÌNH THỰC THI CHÍNH
+# 5. TIẾN TRÌNH THỰC THI CHÍNH
 def main_tbmt():
     print(f"=== BẮT ĐẦU CRAWL VÀ BÓC TÁCH SÂU TBMT - NGÀY {TODAY_STR} ===")
     
@@ -131,10 +124,10 @@ def main_tbmt():
     total_raw_scanned = 0
 
     for kw in KEYWORDS:
-        print(f"-> Đang truy vấn từ khóa: '{kw}'...")
+        print(f"-> Truy vấn API Smart Search cho từ khóa: '{kw}'...")
         raw_items = fetch_tbmt_by_keyword(session, kw)
         total_raw_scanned += len(raw_items)
-        print(f"   + Server trả về: {len(raw_items)} bản ghi.")
+        print(f"   + Tìm thấy từ server: {len(raw_items)} bản ghi.")
 
         for item in raw_items:
             code = str(item.get("bidNo") or item.get("notifyNo") or item.get("code") or item.get("id") or "")
@@ -143,7 +136,7 @@ def main_tbmt():
             
             full_text = extract_full_searchable_text(item)
             
-            # Quét khớp từ khóa trong toàn bộ dữ liệu chi tiết
+            # Quét sâu từ khóa trong toàn bộ dữ liệu chi tiết
             if kw.lower() in full_text:
                 if code and code not in unique_matches:
                     location = "Tiêu đề" if kw.lower() in f"{code} {title}".lower() else "Chi tiết Hàng hóa"
