@@ -10,7 +10,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from requests.adapters import HTTPAdapter
 
-# 1. TẮT CẢNH BÁO SSL SECURITY LEVEL
+# 1. TẮT CẢNH BÁO MÃ HÓA SSL VỚI SERVER MUA SẮM CÔNG
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class CustomSSLAdapter(HTTPAdapter):
@@ -25,7 +25,7 @@ class CustomSSLAdapter(HTTPAdapter):
         kwargs['ssl_context'] = ctx
         return super().init_poolmanager(*args, **kwargs)
 
-# 2. CẤU HÌNH DỮ LIỆU & 14 TỪ KHÓA
+# 2. CẤU HÌNH DỮ LIỆU & 14 TỪ KHÓA Y TẾ (TUÂN THỦ 100% QUY TẮC)
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
 RECEIVER_EMAIL = SENDER_EMAIL
@@ -41,10 +41,9 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
 
-# 3. TRUY VẤN DỮ LIỆU TBMT QUA SMART SEARCH CHUẨN MẢNG JSON F12
-def fetch_tbmt_by_keyword(session, keyword):
-    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/smart/search"
-    
+# 3. TRUY VẤN DANH SÁCH TBMT THÔ QUA ENDPOINT KHÔNG TOKEN (PAGESIZE 50)
+def fetch_all_tbmt_raw(session):
+    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/popular-keyword/get-list"
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json;charset=UTF-8",
@@ -53,80 +52,62 @@ def fetch_tbmt_by_keyword(session, keyword):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
     
-    items_found = []
-    kw_str = str(keyword).strip()
-
-    for page in range(4):
-        # Payload chuẩn dạng mảng bọc đầy đủ matchFields của TBMT V2
-        payload = [
-            {
-                "pageSize": 50,
-                "pageNumber": str(page),
-                "query": [
-                    {
-                        "index": "es-tbmt",
-                        "matchType": "all-1",
-                        "matchFields": ["notifyNo", "bidName"],
-                        "keySearch": kw_str
-                    },
-                    {
-                        "name": "type",
-                        "searchType": "in",
-                        "fieldValues": ["es-tbmt"]
-                    }
-                ]
+    collected_items = []
+    # Quét 10 trang dữ liệu TBMT mới nhất (500 gói thầu)
+    for page in range(10):
+        payload = {
+            "pageSize": 50,
+            "pageNumber": page,
+            "sort": "createdDate desc",
+            "popularKeyword": {
+                "status": 1
             }
-        ]
-        
+        }
         try:
             res = session.post(url, json=payload, headers=headers, timeout=25, verify=False)
+            
+            # Fallback sang endpoint danh mục phụ nếu endpoint chính gián đoạn
+            if res.status_code != 200:
+                url_fb = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/lcnt_tbmcgtt_hsmt"
+                payload_fb = {
+                    "pageSize": 50,
+                    "pageNumber": page,
+                    "sort": "createdDate desc",
+                    "query": []
+                }
+                res = session.post(url_fb, json=payload_fb, headers=headers, timeout=25, verify=False)
+
             if res.status_code == 200:
                 data = res.json()
                 data_list = []
-                if isinstance(data, list) and len(data) > 0:
-                    data_list = data[0].get("result", {}).get("data", [])
-                elif isinstance(data, dict):
+                if isinstance(data, dict):
                     data_list = data.get("result", {}).get("data", [])
+                    if not data_list and isinstance(data.get("result"), list):
+                        data_list = data.get("result", [])
+                elif isinstance(data, list) and len(data) > 0:
+                    data_list = data[0].get("result", {}).get("data", [])
 
                 if not data_list:
+                    print(f"-> Dừng quét tại trang {page}: Đã lấy hết gói thầu mới.")
                     break
                 
-                items_found.extend(data_list)
+                collected_items.extend(data_list)
+                print(f"   + Đã lấy thành công trang {page + 1}: thêm {len(data_list)} bản ghi (Tích lũy: {len(collected_items)}).")
+                
                 if len(data_list) < 50:
                     break
             else:
-                # Nếu payload chuẩn 1 bị từ chối, thử fallback sang payload rút gọn
-                payload_fallback = [
-                    {
-                        "pageSize": 50,
-                        "pageNumber": str(page),
-                        "query": [
-                            {
-                                "index": "es-tbmt",
-                                "keySearch": kw_str
-                            }
-                        ]
-                    }
-                ]
-                res_fb = session.post(url, json=payload_fallback, headers=headers, timeout=25, verify=False)
-                if res_fb.status_code == 200:
-                    data_fb = res_fb.json()
-                    data_list = data_fb[0].get("result", {}).get("data", []) if isinstance(data_fb, list) and len(data_fb) > 0 else []
-                    if not data_list:
-                        break
-                    items_found.extend(data_list)
-                else:
-                    print(f"[CẢNH BÁO HTTP {res.status_code}] Từ khóa '{keyword}' tại trang {page}")
-                    break
+                print(f"[CẢNH BÁO HTTP {res.status_code}] Tại trang {page}")
+                break
             time.sleep(0.3)
         except Exception as e:
-            print(f"[LỖI KẾT NỐI API] Từ khóa '{keyword}' trang {page}: {e}")
+            print(f"[LỖI API] Trang {page}: {e}")
             break
 
-    return items_found
+    return collected_items
 
 
-# 4. CHUYỂN TOÀN BỘ NESTED JSON THÀNH STR ĐỂ DEEP-SEARCH HÀNG HÓA CHI TIẾT
+# 4. CHUYỂN TOÀN BỘ NESTED JSON THÀNH CHUỖI ĐỂ DEEP-SEARCH HÀNG HÓA CHI TIẾT
 def extract_full_searchable_text(item):
     try:
         return json.dumps(item, ensure_ascii=False).lower()
@@ -134,30 +115,28 @@ def extract_full_searchable_text(item):
         return ""
 
 
-# 5. CHƯƠNG TRÌNH CHÍNH
+# 5. TIẾN TRÌNH THỰC THI CHÍNH
 def main_tbmt():
     print(f"=== BẮT ĐẦU CRAWL VÀ BÓC TÁCH SÂU TBMT - NGÀY {TODAY_STR} ===")
     
     session = requests.Session()
     session.mount("https://", CustomSSLAdapter())
     
+    # Bước 1: Kéo dữ liệu thầu thô từ máy chủ
+    raw_items = fetch_all_tbmt_raw(session)
+    print(f"-> Thu thập thành công tổng cộng: {len(raw_items)} bản ghi thô từ máy chủ.")
+    
+    # Bước 2: Bóc tách và quét sâu 14 từ khóa (KHÔNG LOẠI TRỪ BẤT KỲ TỪ NÀO)
     unique_matches = {}
-    total_raw_scanned = 0
-
-    for kw in KEYWORDS:
-        print(f"-> Truy vấn API Smart Search cho từ khóa: '{kw}'...")
-        raw_items = fetch_tbmt_by_keyword(session, kw)
-        total_raw_scanned += len(raw_items)
-        print(f"   + Server trả về: {len(raw_items)} bản ghi.")
-
-        for item in raw_items:
-            code = str(item.get("bidNo") or item.get("notifyNo") or item.get("code") or item.get("id") or "")
-            title = str(item.get("bidName") or item.get("name") or item.get("title") or "")
-            investor = str(item.get("procuringEntityName") or item.get("investorName") or "")
-            
-            full_text = extract_full_searchable_text(item)
-            
-            # Quét 14 từ khóa sâu trong toàn bộ cấu trúc JSON
+    for item in raw_items:
+        code = str(item.get("bidNo") or item.get("notifyNo") or item.get("code") or item.get("id") or "")
+        title = str(item.get("bidName") or item.get("name") or item.get("title") or "")
+        investor = str(item.get("procuringEntityName") or item.get("investorName") or "")
+        
+        full_text = extract_full_searchable_text(item)
+        
+        # Quét 14 từ khóa trong toàn bộ dữ liệu cấu trúc lồng nhau
+        for kw in KEYWORDS:
             if kw.lower() in full_text:
                 if code and code not in unique_matches:
                     location = "Tiêu đề" if kw.lower() in f"{code} {title}".lower() else "Chi tiết Hàng hóa"
@@ -168,19 +147,20 @@ def main_tbmt():
                         "matched_kw": kw,
                         "location": location
                     }
+                break
 
     matched_list = list(unique_matches.values())
     print(f"==================================================")
-    print(f"-> Tổng số bản ghi thô quét được: {total_raw_scanned}")
+    print(f"-> Tổng số bản ghi thô quét được: {len(raw_items)}")
     print(f"-> Số gói TBMT độc bản khớp danh mục 14 từ khóa: {len(matched_list)}")
     print(f"==================================================")
 
-    # 6. TẠO BÁO CÁO VÀ GỬI EMAIL
+    # Bước 3: Tạo báo cáo HTML và gửi Email
     if not matched_list:
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h3>
-            <p>Hệ thống đã kết nối thành công tới server Mua Sắm Công nhưng không tìm thấy TBMT nào phù hợp với danh mục 14 từ khóa theo dõi.</p>
+            <p>Hệ thống đã thu thập thành công {len(raw_items)} bản ghi nhưng không phát hiện TBMT nào khớp 14 từ khóa theo dõi.</p>
         </div>
         """
     else:
