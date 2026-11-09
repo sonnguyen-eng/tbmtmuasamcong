@@ -3,11 +3,31 @@ import time
 import smtplib
 import json
 import requests
+import urllib3
+import ssl
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from requests.adapters import HTTPAdapter
 
-# 1. Cấu hình Email & Danh mục 14 từ khóa
+# Vô hiệu hóa các cảnh báo insecure request
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ================= 1. CẤU HÌNH SSL LÊN HỆ THỐNG MUA SẮM CÔNG =================
+class CustomSSLAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        # Hạ mức security level để chấp nhận khóa DH_KEY_TOO_SMALL của Mua Sắm Công
+        try:
+            ctx.set_ciphers('DEFAULT@SECLEVEL=1:ALL')
+        except Exception:
+            ctx.set_ciphers('DEFAULT:ALL')
+        kwargs['ssl_context'] = ctx
+        return super().init_poolmanager(*args, **kwargs)
+
+# 2. Cấu hình Email & Danh mục 14 từ khóa
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
 RECEIVER_EMAIL = SENDER_EMAIL
@@ -22,7 +42,7 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
 
-# 2. Truy vấn API TBMT quét TOÀN BỘ các trang (Quét sạch 100%)
+# 3. Truy vấn API TBMT tự động vượt rào SSL DH Key
 def fetch_all_tbmt_api():
     url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/popular-keyword/get-list"
     headers = {
@@ -33,9 +53,12 @@ def fetch_all_tbmt_api():
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
     
+    session = requests.Session()
+    session.mount("https://", CustomSSLAdapter())
+
     collected_items = []
     page = 0
-    max_pages = 50  # Giới hạn tối đa 50 trang (tương đương 2.500 TBMT mới nhất)
+    max_pages = 50  # Quét tối đa 50 trang (2.500 gói)
 
     while page < max_pages:
         payload = {
@@ -47,7 +70,7 @@ def fetch_all_tbmt_api():
             }
         }
         try:
-            res = requests.post(url, json=payload, headers=headers, timeout=25)
+            res = session.post(url, json=payload, headers=headers, timeout=25, verify=False)
             if res.status_code == 200:
                 data = res.json()
                 items = data.get("result", {}).get("data", [])
@@ -59,7 +82,7 @@ def fetch_all_tbmt_api():
                     break
 
                 collected_items.extend(items)
-                print(f"   + Lấy thành công trang {page + 1}: thêm {len(items)} TBMT (Tổng tích lũy: {len(collected_items)})")
+                print(f"   + Lấy thành công trang {page + 1}: thêm {len(items)} TBMT (Tích lũy: {len(collected_items)})")
 
                 if len(items) < 50:
                     break
@@ -76,7 +99,6 @@ def fetch_all_tbmt_api():
     return collected_items
 
 
-# 3. Trích xuất toàn bộ văn bản JSON (Search sâu danh mục hàng hóa)
 def extract_full_searchable_text(item):
     try:
         return json.dumps(item, ensure_ascii=False).lower()
@@ -97,11 +119,9 @@ def main_tbmt():
         
         full_searchable_text = extract_full_searchable_text(item)
         
-        # 1. Loại trừ "ống soi"
         if EXCLUDE_KEYWORD.lower() in full_searchable_text:
             continue
             
-        # 2. Đối soát từ khóa
         for kw in KEYWORDS:
             if kw.lower() in full_searchable_text:
                 if code and code not in unique_matches:
@@ -118,7 +138,6 @@ def main_tbmt():
     matched_list = list(unique_matches.values())
     print(f"-> Khớp từ khóa (bao gồm danh mục hàng hóa): {len(matched_list)} gói TBMT.")
 
-    # Render HTML Email
     if not matched_list:
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
@@ -157,7 +176,6 @@ def main_tbmt():
             """
         html_body += "</table></div>"
 
-    # Gửi Email SMTP
     if SENDER_EMAIL and SENDER_PASSWORD:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = f"[TBMT Y TẾ FULL] Báo cáo ngày {TODAY_STR}"
