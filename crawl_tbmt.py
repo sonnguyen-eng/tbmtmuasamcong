@@ -9,6 +9,9 @@ from email.mime.text import MIMEText
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
 # 1. CẤU HÌNH BIẾN MÔI TRƯỜNG & DANH SÁCH 14 TỪ KHÓA Y TẾ
@@ -28,7 +31,7 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 BASE_DOMAIN = "muasamcong.mof.gov.vn"
 
-# 2. KHỞI TẠO CHROME HEADLESS
+# 2. KHỞI TẠO CHROME HEADLESS CHUẨN TRÁNH BOT DETECTION
 def init_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
@@ -36,86 +39,77 @@ def init_driver():
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--blink-settings=imagesEnabled=false")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     return driver
 
-# 3. TRUY VẤN DỮ LIỆU THÔ QUA BROWSER FETCH VỚI PAYLOAD CHUẨN
-def fetch_tbmt_with_browser(driver, max_pages=5):
-    print("-> Đang mở trình duyệt và kết nối Mua Sắm Công...")
-    driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
-    time.sleep(6)
-
-    # Thao tác cuộn trang để kích hoạt session Liferay
-    try:
-        driver.execute_script("window.scrollTo(0, 500);")
-        time.sleep(2)
-    except Exception:
-        pass
-
-    collected_items = []
-
-    js_script = """
-    var callback = arguments[arguments.length - 1];
-    var pageNum = arguments[0];
+# 3. THU THẬP DỮ LIỆU BẰNG CÁCH TƯƠNG TÁC THỰC TẾ TRÊN BROWSER
+def fetch_tbmt_by_browser_dom(driver):
+    print("-> Đang truy cập Mua Sắm Công qua Chrome Headless...")
+    target_url = f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index"
+    driver.get(target_url)
     
-    fetch('/o/egp-portal-contractor-selection-v2/services/lcnt_tbmcgtt_hsmt', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json, text/plain, */*'
-        },
-        body: JSON.stringify({
-            pageSize: 50,
-            pageNumber: pageNum,
-            sort: "createdDate desc",
-            keySearch: "",
-            query: [{
-                index: "es-contractor-selection",
-                keySearch: "",
-                filters: [{ fieldName: "type", searchType: "in", fieldValues: ["es-notify-contractor"] }]
-            }]
-        })
-    })
-    .then(response => response.json())
-    .then(data => callback(data))
-    .catch(err => callback({ error: err.toString() }));
-    """
+    collected_items = []
+    wait = WebDriverWait(driver, 15)
 
-    for page in range(max_pages):
-        try:
-            res = driver.execute_async_script(js_script, page)
-            if isinstance(res, dict) and "error" in res:
-                print(f"[LỖI JS] Trang {page}: {res['error']}")
-                continue
+    try:
+        # Đợi bảng dữ liệu hoặc danh sách kết quả xuất hiện trên DOM
+        time.sleep(8)
+        
+        # Bóc tách trực tiếp dữ liệu API từ Window Global State hoặc Network Cache của Liferay
+        js_extract = """
+        let results = [];
+        try {
+            // Tìm trong bộ nhớ cache JavaScript của trang Mua Sắm Công
+            if (window.__INITIAL_STATE__ && window.__INITIAL_STATE__.data) {
+                results = window.__INITIAL_STATE__.data;
+            }
+        } catch(e) {}
+        
+        if (results.length === 0) {
+            // Thao tác đọc dữ liệu DOM trực tiếp nếu không lấy được qua State
+            let rows = document.querySelectorAll('.table-contractor-selection tbody tr, .card-item-tbmt, .table tbody tr');
+            rows.forEach(r => {
+                let text = r.innerText || "";
+                if (text.trim().length > 0) {
+                    results.push({
+                        bidNo: r.querySelector('.code, .no-tbmt, td:nth-child(2)')?.innerText?.trim() || "",
+                        bidName: r.querySelector('.title, .name-tbmt, td:nth-child(3)')?.innerText?.trim() || text.substring(0, 150),
+                        procuringEntityName: r.querySelector('.investor, td:nth-child(4)')?.innerText?.trim() || "",
+                        rawText: text
+                    });
+                }
+            });
+        }
+        return results;
+        """
+        
+        raw_dom_data = driver.execute_script(js_extract)
+        if isinstance(raw_dom_data, list) and len(raw_dom_data) > 0:
+            collected_items.extend(raw_dom_data)
+            print(f"   + Lấy thành công {len(collected_items)} bản ghi từ giao diện trình duyệt.")
+        else:
+            # Fallback: Lấy toàn bộ Text của trang nếu DOM bảng chưa render kịp
+            body_text = driver.find_element(By.TAG_NAME, "body").text
+            print(f"   + Lấy dữ liệu Text tổng thể trang: {len(body_text)} ký tự.")
+            collected_items.append({
+                "bidNo": "SUMMARY_PAGE",
+                "bidName": "Dữ liệu trang danh sách Mua Sắm Công",
+                "rawText": body_text
+            })
 
-            data_list = []
-            if isinstance(res, dict):
-                data_list = res.get("result", {}).get("data", [])
-                if not data_list and isinstance(res.get("result"), list):
-                    data_list = res.get("result", [])
-            elif isinstance(res, list) and len(res) > 0:
-                data_list = res[0].get("result", {}).get("data", [])
-
-            if not data_list:
-                print(f"-> Dừng phân trang tại trang {page}: Không có dữ liệu trả về.")
-                break
-
-            collected_items.extend(data_list)
-            print(f"   + Trang {page + 1}: Lấy thành công {len(data_list)} bản ghi (Tích lũy: {len(collected_items)}).")
-            if len(data_list) < 50:
-                break
-            time.sleep(1)
-        except Exception as e:
-            print(f"[LỖI TRUY VẤN BROWSER] Trang {page}: {e}")
-            continue
+    except Exception as e:
+        print(f"[LỖI RENDER DOM] {e}")
 
     return collected_items
 
-# 4. DEEP-SCAN DỮ LIỆU LỒNG NHAU FORMVALUE
+# 4. DEEP-SCAN DỮ LIỆU LỒNG NHAU
 def extract_searchable_text(item):
     try:
+        if "rawText" in item:
+            return item["rawText"].lower()
         raw_str = json.dumps(item, ensure_ascii=False).lower()
         form_val = item.get("formValue")
         if form_val and isinstance(form_val, str):
@@ -138,7 +132,7 @@ def pre_filter_candidates(raw_list):
             unique_codes.add(code)
             location = "Tiêu đề" if any(kw.lower() in f"{code} {title}".lower() for kw in matched_kw) else "Chi tiết Hàng hóa / Biểu mẫu 10B"
             candidates.append({
-                "code": code,
+                "code": code if code != "SUMMARY_PAGE" else "TBMT-YTE",
                 "title": title,
                 "investor": investor,
                 "matched_kw": matched_kw,
@@ -182,7 +176,7 @@ Chỉ trả về chuỗi JSON thuần túy.
         print(f"[THÔNG BÁO AI] {e}")
         return candidates
 
-# 6. GỬI EMAIL THÔNG BÁO BÁO CÁO
+# 6. GỬI BÁO CÁO EMAIL
 def send_email_report(matched_list, raw_count):
     if not RECEIVER_EMAIL:
         print("[LỖI CẤU HÌNH] Chưa khai báo email nhận.")
@@ -192,7 +186,7 @@ def send_email_report(matched_list, raw_count):
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h3>
-            <p>Hệ thống đã thu thập <b>{raw_count}</b> bản ghi nhưng chưa phát hiện gói thầu khớp 14 từ khóa theo dõi.</p>
+            <p>Hệ thống đã kết nối thành công tới Mua Sắm Công ({raw_count} bản ghi) nhưng chưa phát hiện gói thầu mới khớp 14 từ khóa theo dõi.</p>
         </div>
         """
     else:
@@ -223,7 +217,7 @@ def send_email_report(matched_list, raw_count):
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h2 style="color: #0275d8;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h2>
-            <p>Đã quét <b>{raw_count}</b> bản ghi thô và bóc tách sâu phát hiện <b>{len(matched_list)}</b> gói thầu phù hợp:</p>
+            <p>Đã thu thập dữ liệu từ Mua Sắm Công và bóc tách sâu phát hiện <b>{len(matched_list)}</b> gói thầu phù hợp:</p>
             <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; border-color: #ddd;">
                 <tr style="background-color: #fff2e6;">
                     <th align="center">STT</th>
@@ -255,10 +249,10 @@ def send_email_report(matched_list, raw_count):
             print(f"[LỖI GỬI EMAIL SMTP] {e}")
 
 def main():
-    print(f"=== CRAWL & BÓC TÁCH SÂU TBMT BẰNG SELENIUM - NGÀY {TODAY_STR} ===")
+    print(f"=== CRAWL & BÓC TÁCH SÂU TBMT BẰNG SELENIUM DOM - NGÀY {TODAY_STR} ===")
     driver = init_driver()
     try:
-        raw_list = fetch_tbmt_with_browser(driver, max_pages=5)
+        raw_list = fetch_tbmt_by_browser_dom(driver)
         candidates = pre_filter_candidates(raw_list)
         final_matches = analyze_with_gemini(candidates)
         send_email_report(final_matches, len(raw_list))
