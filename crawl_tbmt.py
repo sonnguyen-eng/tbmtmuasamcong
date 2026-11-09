@@ -40,9 +40,9 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
 
-# 3. TRUY VẤN API TBMT VỚI PAYLOAD F12 CHUẨN XÁC
+# 3. TRUY VẤN API SMART SEARCH TBMT CHUẨN F12
 def fetch_tbmt_by_keyword(session, keyword):
-    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/popular-keyword/get-list"
+    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/smart/search"
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json;charset=UTF-8",
@@ -52,28 +52,36 @@ def fetch_tbmt_by_keyword(session, keyword):
     }
     
     items_found = []
-    # Quét 5 trang đầu tiên cho mỗi từ khóa (250 gói/từ khóa)
+    # Quét 5 trang đầu tiên cho mỗi từ khóa
     for page in range(5):
-        # Payload đóng gói đúng chuẩn F12 từ tài liệu của anh
-        payload = {
-            "pageSize": 50,
-            "pageNumber": str(page),
-            "query": [
-                {
-                    "index": "popular-keyword",
-                    "keySearch": str(keyword).strip()
-                }
-            ]
-        }
+        payload = [
+            {
+                "pageSize": 50,
+                "pageNumber": str(page),
+                "query": [
+                    {
+                        "index": "es-tbmt",
+                        "matchType": "all-1",
+                        "matchFields": ["notifyNo", "bidName"],
+                        "keySearch": str(keyword).strip()
+                    },
+                    {
+                        "name": "type",
+                        "searchType": "in",
+                        "fieldValues": ["es-tbmt"]
+                    }
+                ]
+            }
+        ]
         try:
             res = session.post(url, json=payload, headers=headers, timeout=25, verify=False)
             if res.status_code == 200:
                 data = res.json()
                 data_list = []
-                if isinstance(data.get("result"), dict):
+                if isinstance(data, list) and len(data) > 0:
+                    data_list = data[0].get("result", {}).get("data", [])
+                elif isinstance(data, dict):
                     data_list = data.get("result", {}).get("data", [])
-                elif isinstance(data.get("result"), list):
-                    data_list = data.get("result", [])
 
                 if not data_list:
                     break
@@ -88,7 +96,7 @@ def fetch_tbmt_by_keyword(session, keyword):
     return items_found
 
 
-# 4. TRÍCH XUẤT VĂN BẢN QUÉT SÂU DANH MỤC HÀNG HÓA
+# 4. TRÍCH XUẤT VĂN BẢN QUÉT SÂU CHI TIẾT
 def extract_full_searchable_text(item):
     try:
         return json.dumps(item, ensure_ascii=False).lower()
@@ -107,19 +115,19 @@ def main_tbmt():
     total_raw_scanned = 0
 
     for kw in KEYWORDS:
-        print(f"-> Đang truy vấn từ khóa chuẩn F12: '{kw}'...")
+        print(f"-> Truy vấn API Smart Search TBMT cho: '{kw}'...")
         raw_items = fetch_tbmt_by_keyword(session, kw)
         total_raw_scanned += len(raw_items)
         print(f"   + Tìm thấy: {len(raw_items)} bản ghi.")
 
         for item in raw_items:
-            code = str(item.get("bidNo") or item.get("notifyNo") or item.get("id") or "")
+            code = str(item.get("bidNo") or item.get("notifyNo") or item.get("code") or item.get("id") or "")
             title = str(item.get("bidName") or item.get("name") or item.get("title") or "")
             investor = str(item.get("procuringEntityName") or item.get("investorName") or "")
             
             full_searchable_text = extract_full_searchable_text(item)
             
-            # 1. Bỏ qua nếu có từ khóa loại trừ "ống soi"
+            # 1. Bỏ qua từ khóa loại trừ "ống soi"
             if EXCLUDE_KEYWORD.lower() in full_searchable_text:
                 continue
                 
