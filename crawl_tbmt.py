@@ -25,7 +25,7 @@ class CustomSSLAdapter(HTTPAdapter):
         kwargs['ssl_context'] = ctx
         return super().init_poolmanager(*args, **kwargs)
 
-# 2. CẤU HÌNH DỮ LIỆU & DANH SÁCH 14 TỪ KHÓA
+# 2. CẤU HÌNH DỮ LIỆU & DANH SÁCH 14 TỪ KHÓA CHUẨN
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
 RECEIVER_EMAIL = SENDER_EMAIL
@@ -41,9 +41,9 @@ TZ_VN = timezone(timedelta(hours=7))
 TODAY_STR = datetime.now(TZ_VN).strftime("%d/%m/%Y")
 
 
-# 3. TRUY VẤN DANH SÁCH TBMT THÔ QUA F12 API LCNT_TBMCGTT_HSMT
+# 3. TRUY VẤN DANH SÁCH TBMT THÔ (CHỐNG HTTP 500 VÀ HTTP 400)
 def fetch_tbmt_list_raw(session):
-    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/lcnt_tbmcgtt_hsmt"
+    url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/popular-keyword/get-list"
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json;charset=UTF-8",
@@ -53,12 +53,12 @@ def fetch_tbmt_list_raw(session):
     }
     
     collected_items = []
-    for page in range(10):  # Quét 10 trang (500 gói thầu)
+    # Quét 10 trang dữ liệu mới nhất (500 gói thầu)
+    for page in range(10):
         payload = {
             "pageSize": 50,
-            "pageNumber": page,
-            "sort": "createdDate desc",
-            "query": []
+            "pageNumber": str(page),
+            "sort": "createdDate desc"
         }
         try:
             res = session.post(url, json=payload, headers=headers, timeout=25, verify=False)
@@ -73,7 +73,7 @@ def fetch_tbmt_list_raw(session):
                     data_list = data[0].get("result", {}).get("data", [])
 
                 if not data_list:
-                    print(f"-> Dừng phân trang tại trang {page}: Không có thêm dữ liệu mới.")
+                    print(f"-> Hoàn tất lấy danh sách tại trang {page}.")
                     break
                 
                 collected_items.extend(data_list)
@@ -81,17 +81,18 @@ def fetch_tbmt_list_raw(session):
                 if len(data_list) < 50:
                     break
             else:
-                print(f"[CẢNH BÁO HTTP {res.status_code}] Tại trang {page}")
-                break
+                print(f"[THÔNG BÁO MẠNG HTTP {res.status_code}] Tại trang {page}")
+                # Không break ngay khi gặp 1 trang lỗi, tiếp tục bỏ qua trang đó
+                continue
             time.sleep(0.3)
         except Exception as e:
-            print(f"[LỖI API LIST] Trang {page}: {e}")
-            break
+            print(f"[LỖI TRUY VẤN MẠNG] Trang {page}: {e}")
+            continue
 
     return collected_items
 
 
-# 4. TRUY VẤN TÌM KIẾM SÂU CHUYÊN BIỆT THEO TỪ KHÓA TẠI SMART/SEARCH
+# 4. TRUY VẤN TÌM KIẾM THEO TỪ KHÓA BẰNG SMART SEARCH (FALLBACK ĐA ĐIỂM)
 def search_tbmt_by_keyword(session, keyword):
     url = "https://muasamcong.mof.gov.vn/o/egp-portal-contractor-selection-v2/services/smart/search"
     headers = {
@@ -105,7 +106,6 @@ def search_tbmt_by_keyword(session, keyword):
     items_found = []
     kw_str = str(keyword).strip()
     
-    # Quét 3 trang đầu cho mỗi từ khóa
     for page in range(3):
         payload = [
             {
@@ -113,7 +113,7 @@ def search_tbmt_by_keyword(session, keyword):
                 "pageNumber": str(page),
                 "query": [
                     {
-                        "index": "es-tbmt",
+                        "index": "popular-keyword",
                         "keySearch": kw_str
                     }
                 ]
@@ -141,7 +141,7 @@ def search_tbmt_by_keyword(session, keyword):
     return items_found
 
 
-# 5. CHUYỂN DỮ LIỆU THÀNH VĂN BẢN ĐỂ DEEP-SEARCH LOCAL
+# 5. CHUYỂN TOÀN BỘ NESTED JSON THÀNH STR ĐỂ DEEP-SEARCH LOCAL
 def extract_full_searchable_text(item):
     try:
         return json.dumps(item, ensure_ascii=False).lower()
@@ -158,12 +158,12 @@ def main_tbmt():
     
     unique_matches = {}
     
-    # BƯỚC 1: Kéo toàn bộ danh sách gói thầu TBMT mới nhất từ server
+    # BƯỚC 1: Kéo danh sách thầu tổng thể
     print("-> Đang tải danh sách TBMT tổng thể...")
     raw_list = fetch_tbmt_list_raw(session)
     print(f"-> Thu thập thành công tổng cộng: {len(raw_list)} bản ghi thô từ máy chủ.")
     
-    # Đối soát từ khóa trên danh sách tổng thể
+    # Quét từ khóa trong danh sách thầu thô
     for item in raw_list:
         code = str(item.get("bidNo") or item.get("notifyNo") or item.get("code") or item.get("id") or "")
         title = str(item.get("bidName") or item.get("name") or item.get("title") or "")
@@ -182,7 +182,7 @@ def main_tbmt():
                         "location": location
                     }
 
-    # BƯỚC 2: Quét trực tiếp 14 từ khóa để bóc tách sâu các gói thầu ẩn trong biểu mẫu
+    # BƯỚC 2: Quét trực tiếp 14 từ khóa
     print("-> Đang thực hiện tìm kiếm sâu theo từng từ khóa y tế...")
     for kw in KEYWORDS:
         kw_items = search_tbmt_by_keyword(session, kw)
@@ -197,7 +197,7 @@ def main_tbmt():
                     "title": title,
                     "investor": investor,
                     "matched_kw": kw,
-                    "location": "Danh mục Hàng hóa (Biểu mẫu 10B)"
+                    "location": "Chi tiết Hàng hóa / Biểu mẫu 10B"
                 }
 
     matched_list = list(unique_matches.values())
@@ -210,7 +210,7 @@ def main_tbmt():
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h3>
-            <p>Hệ thống đã thu thập và đối soát thành công nhưng không phát hiện thông báo thầu nào khớp danh mục 14 từ khóa theo dõi.</p>
+            <p>Hệ thống đã kết nối thành công tới server Mua Sắm Công nhưng chưa phát hiện TBMT phù hợp với 14 từ khóa theo dõi.</p>
         </div>
         """
     else:
