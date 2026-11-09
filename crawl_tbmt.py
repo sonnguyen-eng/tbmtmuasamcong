@@ -64,7 +64,19 @@ def is_published_strictly_today(item):
     except Exception:
         return True
 
-# 5. HÀM KIỂM TRA & CHUẨN HÓA TỈNH / THÀNH PHỐ
+# 5. HÀM ĐỊNH DẠNG GIÁ TRỊ GÓI THẦU (VND)
+def format_currency(val):
+    if not val:
+        return "Chưa cập nhật"
+    try:
+        num = float(val)
+        if num == 0:
+            return "Chưa cập nhật"
+        return f"{num:,.0f} VND".replace(",", ".")
+    except Exception:
+        return str(val)
+
+# 6. HÀM KIỂM TRA & CHUẨN HÓA TỈNH / THÀNH PHỐ
 def check_location(item, raw_str):
     found_locs = []
     
@@ -93,7 +105,7 @@ def check_location(item, raw_str):
 
     return list(set(found_locs))
 
-# 6. BÓC TÁCH DEEP-SCAN SÂU BIỂU MẪU 10B / HSMT (API GET-ALL-HSMT)
+# 7. BÓC TÁCH DEEP-SCAN SÂU BIỂU MẪU 10B / HSMT (API GET-ALL-HSMT)
 def get_hsmt_form_values(driver, notify_no, notify_version="00", bid_field="HH"):
     js_get_hsmt = """
     var callback = arguments[arguments.length - 1];
@@ -128,13 +140,12 @@ def get_hsmt_form_values(driver, notify_no, notify_version="00", bid_field="HH")
         pass
     return ""
 
-# 7. TRÍCH XUẤT SMART SEARCH CẦN THIẾT KẾT HỢP DEEP-SCAN DEEP SEARCH
+# 8. TRÍCH XUẤT THÔNG TIN TBMT ĐĂNG TRONG NGÀY VÀ LẤY GIÁ TRỊ GÓI THẦU
 def fetch_tbmt_today(driver):
     print(f"-> Đang mở trình duyệt và khởi tạo Session Mua Sắm Công (Ngày {TODAY_STR})...")
     driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
     time.sleep(10)
 
-    # Trích xuất Token bảo mật động
     js_get_token = """
     let token = '';
     let entries = window.performance.getEntriesByType('resource');
@@ -191,7 +202,6 @@ def fetch_tbmt_today(driver):
     .catch(err => callback({ error: err.toString() }));
     """
 
-    # Tập hợp các từ khóa tìm kiếm tổng thể để không bỏ sót gói thầu y tế
     search_queries = KEYWORDS + ["thiết bị y tế", "y tế", "bệnh viện", "dụng cụ y tế"]
 
     for kw in search_queries:
@@ -215,7 +225,6 @@ def fetch_tbmt_today(driver):
                 if not isinstance(item, dict):
                     continue
 
-                # BẮT BỘ LỌC ĐÚNG 1 NGÀY HÔM NAY (00H00 -> HIỆN TẠI)
                 if not is_published_strictly_today(item):
                     continue
 
@@ -231,16 +240,18 @@ def fetch_tbmt_today(driver):
                     
                 investor = str(item.get("investorName") or item.get("procuringEntityName") or "")
                 
-                # TẦNG 1: Bóc tách thuộc tính JSON mặc định
+                # Bóc tách Dự toán / Giá gói thầu
+                est_amount_raw = item.get("estAmount") or item.get("investTotal") or item.get("bidPrice")
+                formatted_amount = format_currency(est_amount_raw)
+
                 raw_str = json.dumps(item, ensure_ascii=False).lower()
 
-                # TẦNG 2 (DEEP-SCAN): Truy vấn bóc tách Biểu mẫu 10B/HSMT cho mọi gói thầu
+                # DEEP-SCAN bóc tách Biểu mẫu 10B/HSMT
                 if code:
                     hsmt_str = get_hsmt_form_values(driver, code, notify_ver, bid_field)
                     if hsmt_str:
                         raw_str += " " + hsmt_str
 
-                # LỌC TỪ KHÓA Y TẾ THỰC TẾ (12 KEYWORDS)
                 matched_kws = [k for k in KEYWORDS if k.lower() in raw_str]
                 if matched_kws:
                     matched_province = check_location(item, raw_str)
@@ -251,6 +262,7 @@ def fetch_tbmt_today(driver):
                             unique_matches[code] = {
                                 "code": code,
                                 "title": title,
+                                "amount": formatted_amount,
                                 "investor": investor,
                                 "province": ", ".join(matched_province),
                                 "matched_kw": ", ".join(matched_kws),
@@ -265,7 +277,7 @@ def fetch_tbmt_today(driver):
 
     return list(unique_matches.values())
 
-# 8. PHÂN TÍCH VỚI GEMINI AI
+# 9. PHÂN TÍCH VỚI GEMINI AI
 def analyze_with_gemini(candidates):
     if not candidates or not GEMINI_API_KEY:
         return candidates
@@ -283,7 +295,7 @@ Dưới đây là danh sách các Thông báo mời thầu (TBMT) phát hành tr
 Yêu cầu:
 1. Giữ nguyên toàn bộ các gói thầu trong danh sách đầu vào.
 2. Viết 1 câu tóm tắt ngắn gọn lý do phù hợp hoặc mặt hàng chính trong gói thầu.
-3. Trả về đúng mảng JSON chứa các object: "code", "title", "investor", "province", "matched_kw", "location", "reason".
+3. Trả về đúng mảng JSON chứa các object: "code", "title", "amount", "investor", "province", "matched_kw", "location", "reason".
 
 Danh sách:
 {json.dumps(candidates, ensure_ascii=False, indent=2)}
@@ -313,7 +325,7 @@ Chỉ trả về chuỗi JSON thuần túy (không kèm markdown).
         print(f"[THÔNG BÁO AI] {e}")
         return candidates
 
-# 9. GỬI EMAIL BÁO CÁO
+# 10. GỬI EMAIL BÁO CÁO (CÓ CỘT GIÁ TRỊ GÓI THẦU)
 def send_email_report(matched_list):
     if not RECEIVER_EMAIL:
         print("[LỖI CẤU HÌNH] Chưa khai báo email nhận.")
@@ -331,6 +343,7 @@ def send_email_report(matched_list):
         for idx, item in enumerate(matched_list, 1):
             code = item.get("code", "")
             title = item.get("title", "")
+            amount = item.get("amount", "Chưa cập nhật")
             investor = item.get("investor", "")
             province = item.get("province", "Theo dõi")
             location = item.get("location", "Biểu mẫu / Hàng hóa")
@@ -343,6 +356,7 @@ def send_email_report(matched_list):
                 <td align="center">{idx}</td>
                 <td><b>{code}</b></td>
                 <td>{title}</td>
+                <td align="right"><b><span style="color: #2e7d32;">{amount}</span></b></td>
                 <td>{investor}</td>
                 <td align="center"><b><span style="color: #d9534f;">{province}</span></b></td>
                 <td align="center"><span style="background-color: #ffffcc; padding: 3px 6px; border-radius: 3px;">{matched_kw}</span></td>
@@ -361,6 +375,7 @@ def send_email_report(matched_list):
                     <th align="center">STT</th>
                     <th>Mã TBMT</th>
                     <th>Tên Gói Thầu</th>
+                    <th align="right">Giá Trị Gói Thầu</th>
                     <th>Bên Mời Thầu</th>
                     <th align="center">Tỉnh / TP</th>
                     <th align="center">Từ Khóa Khớp</th>
