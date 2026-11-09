@@ -52,7 +52,6 @@ def fetch_tbmt_list_raw(session):
     collected_items = []
     
     for page in range(10):
-        # Đã ép pageNumber về dạng chuỗi ("0", "1",...) để khớp định dạng ElasticSearch của server
         payload = {
             "pageSize": 50,
             "pageNumber": str(page),
@@ -191,4 +190,14 @@ def main_tbmt():
         msg["Subject"] = f"[TBMT Y TẾ] Báo cáo ngày {TODAY_STR}"
         msg["From"] = SENDER_EMAIL
         msg["To"] = RECEIVER_EMAIL
-        msg.attach(MIMEText(html_body, "html
+        msg.attach(MIMEText(html_body, "html"))
+        try:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                server.login(SENDER_EMAIL, SENDER_PASSWORD)
+                server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, msg.as_string())
+            print(f"[SUCCESS] Đã gửi báo cáo TBMT thành công tới {RECEIVER_EMAIL}!")
+        except Exception as e:
+            print(f"[LỖI GỬI EMAIL] {e}")
+
+if __name__ == "__main__":
+    main_tbmt()
