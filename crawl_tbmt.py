@@ -12,10 +12,15 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 
 # 1. CẤU HÌNH BIẾN MÔI TRƯỜNG & DANH SÁCH 19 TỪ KHÓA Y TẾ
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+RAW_GEMINI_KEYS = os.environ.get("GEMINI_API_KEY", "").strip()
+GEMINI_API_KEYS = [k.strip() for k in RAW_GEMINI_KEYS.split(",") if k.strip()]
+current_key_index = 0
+
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "").strip()
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", "").strip() or SENDER_EMAIL
+
+LAST_RUN_ENV = os.environ.get("LAST_RUN_TIMESTAMP", "").strip()
 
 KEYWORDS = [
     "nội soi", "Bàn mổ", "đèn mổ", "hệ thống khí y tế", "vận chuyển mẫu", 
@@ -35,10 +40,19 @@ TARGET_LOCATIONS = [
 
 TZ_VN = timezone(timedelta(hours=7))
 NOW_VN = datetime.now(TZ_VN)
-TODAY_STR = NOW_VN.strftime("%d/%m/%Y")
-TODAY_DATE_ONLY = NOW_VN.date()
+TODAY_STR = NOW_VN.strftime("%H:%M %d/%m/%Y")
+
+# Tính toán mốc START_TIME dựa trên lịch chạy tự động trước đó
+if LAST_RUN_ENV:
+    try:
+        START_TIME = datetime.fromisoformat(LAST_RUN_ENV.replace("Z", "+00:00")).astimezone(TZ_VN)
+    except Exception:
+        START_TIME = NOW_VN - timedelta(hours=24)
+else:
+    START_TIME = NOW_VN - timedelta(hours=24)
 
 BASE_DOMAIN = "muasamcong.mof.gov.vn"
+PRIMARY_MODEL = "gemini-3.8-flash"
 
 # 3. KHỞI TẠO CHROME HEADLESS
 def init_driver():
@@ -53,16 +67,16 @@ def init_driver():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     return driver
 
-# 4. KIỂM TRA LỌC ĐÚNG TBMT ĐĂNG TỪ 00H00 NGÀY HÔM NAY
-def is_published_strictly_today(item):
+# 4. LỌC THỜI GIAN ĐĂNG TRONG KHOẢNG [START_TIME -> NOW_VN]
+def is_published_in_time_window(item):
     pub_date_str = item.get("publicDate") or item.get("originalPublicDate") or ""
     if not pub_date_str:
         return True
     
     try:
         clean_date_str = pub_date_str.split(".")[0].replace("Z", "")
-        dt_obj = datetime.strptime(clean_date_str, "%Y-%m-%dT%H:%M:%S")
-        return dt_obj.date() == TODAY_DATE_ONLY
+        dt_obj = datetime.strptime(clean_date_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).astimezone(TZ_VN)
+        return START_TIME <= dt_obj <= NOW_VN
     except Exception:
         return True
 
@@ -81,10 +95,9 @@ def format_currency(val):
     except Exception:
         return str(val)
 
-# 6. HÀM KIỂM TRA & CHUẨN HÓA TỈNH / THÀNH PHỐ
+# 6. KIỂM TRA & CHUẨN HÓA ĐỊA PHƯƠNG
 def check_location(item, raw_str):
     found_locs = []
-    
     investor = str(item.get("investorName") or item.get("procuringEntityName") or "").lower()
     title = str(item.get("bidName") or "").lower()
     search_text = f"{investor} {title} {raw_str}"
@@ -172,9 +185,9 @@ def build_detail_url(item, code, notify_ver):
     url += "&processApply=LDT&bidMode=1_MTHS&isInternet=1"
     return url
 
-# 9. TRÍCH XUẤT THÔNG TIN TBMT ĐĂNG TRONG NGÀY
+# 9. TRÍCH XUẤT THÔNG TIN TBMT THEO KHUNG THỜI GIAN
 def fetch_tbmt_today(driver):
-    print(f"-> Đang mở trình duyệt và khởi tạo Session Mua Sắm Công TBMT (Ngày {TODAY_STR})...")
+    print(f"-> Mở Session Mua Sắm Công TBMT (Khung quét: {START_TIME.strftime('%H:%M %d/%m/%Y')} -> {TODAY_STR})...")
     driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
     time.sleep(10)
 
@@ -257,7 +270,7 @@ def fetch_tbmt_today(driver):
                 if not isinstance(item, dict):
                     continue
 
-                if not is_published_strictly_today(item):
+                if not is_published_in_time_window(item):
                     continue
 
                 code = str(item.get("notifyNo") or item.get("notifyNoStand") or item.get("bidNo") or item.get("id") or "")
@@ -303,28 +316,31 @@ def fetch_tbmt_today(driver):
                                 "detail_url": detail_url,
                                 "snippet": raw_str[:1200]
                             }
-            print(f"   + Server trả về {len(data_list)} bản ghi -> Khớp ngày {TODAY_STR}, địa phương & từ khóa: {matched_in_kw} gói thầu.")
+            print(f"    + Server trả về {len(data_list)} bản ghi -> Khớp khung thời gian, địa phương & từ khóa: {matched_in_kw} gói thầu.")
             time.sleep(0.5)
         except Exception as e:
-            print(f"[CẢNH BÁO FETCH] Từ khóa '{kw}': {e}")
+            print(f"[CẢNH BÁO FETCH TBMT] Từ khóa '{kw}': {e}")
             continue
 
     return list(unique_matches.values())
 
-# 10. PHÂN TÍCH VỚI GEMINI AI (ĐÃ CẬP NHẬT DÂN DANH SÁCH MODEL MỚI CHỐNG LỖI 404)
+# 10. PHÂN TÍCH VỚI GEMINI AI (gemini-3.8-flash HOẶC TỰ ĐỔI API KEY NẾU HẾT QUOTA)
 def analyze_with_gemini(candidates):
-    if not candidates or not GEMINI_API_KEY:
+    global current_key_index, GEMINI_API_KEYS
+    if not candidates or not GEMINI_API_KEYS:
         return candidates
 
-    target_models = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash-exp"]
-    
-    try:
-        from google import genai
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        
-        prompt = f"""
+    while True:
+        try:
+            from google import genai
+            from google.genai import types
+            
+            key = GEMINI_API_KEYS[current_key_index]
+            client = genai.Client(api_key=key)
+            
+            prompt = f"""
 Bạn là chuyên gia phân tích dữ liệu đấu thầu Y tế.
-Dưới đây là danh sách các Thông báo mời thầu (TBMT) phát hành trong ngày {TODAY_STR} đã lọc theo địa phương và 19 từ khóa y tế.
+Dưới đây là danh sách các Thông báo mời thầu (TBMT) phát hành từ {START_TIME.strftime('%H:%M %d/%m/%Y')} đến {TODAY_STR} đã lọc theo địa phương và 19 từ khóa y tế.
 
 Yêu cầu:
 1. Giữ nguyên toàn bộ các gói thầu trong danh sách đầu vào.
@@ -335,32 +351,29 @@ Danh sách:
 {json.dumps(candidates, ensure_ascii=False, indent=2)}
 Chỉ trả về chuỗi JSON thuần túy (không kèm markdown).
 """
-        content = None
-        for model_name in target_models:
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt
-                )
-                if response and response.text:
-                    content = response.text.strip()
-                    break
-            except Exception:
-                continue
+            response = client.models.generate_content(
+                model=PRIMARY_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json")
+            )
+            
+            if response and response.text:
+                content = response.text.strip()
+                return json.loads(content)
 
-        if not content:
-            return candidates
-
-        if content.startswith("```json"): content = content[7:]
-        if content.startswith("```"): content = content[3:]
-        if content.endswith("```"): content = content[:-3]
-        return json.loads(content.strip())
-    except Exception as e:
-        print(f"[CẢNH BÁO AI GOOGLE-GENAI] {e} -> Giữ dữ liệu gốc.")
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[CẢNH BÁO AI GOOGLE-GENAI] {error_msg}")
+            if any(k in error_msg.lower() for k in ["429", "resource_exhausted", "quota"]):
+                if current_key_index + 1 < len(GEMINI_API_KEYS):
+                    current_key_index += 1
+                    print(f"🔄 Đã đổi sang Gemini API Key thứ [{current_key_index + 1}/{len(GEMINI_API_KEYS)}]")
+                    continue
+            break
     
     return candidates
 
-# 11. GỬI EMAIL BÁO CÁO (ĐÃ LÀM SẠCH CHUỖI MULTI-EMAIL CHỐNG LỖI RFC 5321)
+# 11. GỬI EMAIL BÁO CÁO
 def send_email_report(matched_list):
     if not RECEIVER_EMAIL:
         print("[LỖI CẤU HÌNH] Chưa khai báo email nhận.")
@@ -371,13 +384,13 @@ def send_email_report(matched_list):
         print("[LỖI CẤU HÌNH] Danh sách email nhận không hợp lệ.")
         return
 
-    email_subject = f"[TBMT TBYT - Địa bàn phụ trách] Báo cáo gói thầu ngày {TODAY_STR}"
+    email_subject = f"[TBMT TBYT - Địa bàn phụ trách] Báo cáo gói thầu ({START_TIME.strftime('%H:%M %d/%m')} - {TODAY_STR})"
 
     if not matched_list:
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
-            <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h3>
-            <p>Hệ thống đã quét dữ liệu từ 00h00 ngày {TODAY_STR} đến thời điểm hiện tại nhưng chưa phát hiện gói thầu mới khớp 19 từ khóa y tế tại 14 địa phương theo dõi.</p>
+            <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT)</h3>
+            <p>Hệ thống đã quét dữ liệu từ <b>{START_TIME.strftime('%H:%M %d/%m/%Y')}</b> đến <b>{TODAY_STR}</b> nhưng chưa phát hiện gói thầu mới khớp 19 từ khóa y tế tại 14 địa phương theo dõi.</p>
         </div>
         """
     else:
@@ -410,8 +423,9 @@ def send_email_report(matched_list):
             
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
-            <h2 style="color: #0275d8;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT) NGÀY {TODAY_STR}</h2>
-            <p>Đã lọc phát hiện <b>{len(matched_list)}</b> gói thầu Y tế phát hành từ 00h00 ngày hôm nay ({TODAY_STR}) thuộc địa bàn phụ trách:</p>
+            <h2 style="color: #0275d8;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT)</h2>
+            <p>Khung thời gian quét: từ <b>{START_TIME.strftime('%H:%M %d/%m/%Y')}</b> đến <b>{TODAY_STR}</b></p>
+            <p>Đã lọc phát hiện <b>{len(matched_list)}</b> gói thầu Y tế thuộc địa bàn phụ trách:</p>
             <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; border-color: #ddd;">
                 <tr style="background-color: #fff2e6;">
                     <th align="center">STT</th>
@@ -445,7 +459,7 @@ def send_email_report(matched_list):
             print(f"[LỖI GỬI EMAIL SMTP] {e}")
 
 def main():
-    print(f"=== CRAWL & DEEP-SCAN TBMT ĐĂNG TRONG NGÀY {TODAY_STR} ===")
+    print(f"=== CRAWL & DEEP-SCAN TBMT (Khung quét: {START_TIME.strftime('%H:%M %d/%m/%Y')} -> {TODAY_STR}) ===")
     driver = init_driver()
     try:
         matched_list = fetch_tbmt_today(driver)
