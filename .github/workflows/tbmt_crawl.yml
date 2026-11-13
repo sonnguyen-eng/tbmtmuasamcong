@@ -1,62 +1,58 @@
-name: Daily TBMT Bot Processor
+name: Crawl & Deep-Scan TBMT Y Te
 
 on:
   schedule:
-    - cron: '30 0 * * *' # Chạy tự động vào 07:30 sáng hàng ngày (giờ VN)
-  workflow_dispatch:   # Cho phép kích hoạt chạy thủ công từ giao diện GitHub
+    # Chạy tự động lúc 07:30 và 16:30 giờ Việt Nam (00:30 và 09:30 UTC)
+    - cron: '30 0 * * *'
+    - cron: '30 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
-  run-tbmt-bot:
+  crawl-tbmt:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Cài đặt Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Get Last SCHEDULED Workflow Run Timestamp
-        id: last_run
-        uses: actions/github-script@v7
+      - name: Cài đặt Google Chrome
+        uses: browser-actions/setup-chrome@v1
         with:
-          script: |
-            try {
-              const runs = await github.rest.actions.listWorkflowRunsForRepo({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                event: 'schedule',
-                status: 'success',
-                per_page: 5
-              });
-              
-              let lastScheduledRunTime = '';
-              const scheduledRuns = runs.data.workflow_runs || [];
-              
-              if (context.eventName === 'schedule' && scheduledRuns.length > 1) {
-                lastScheduledRunTime = scheduledRuns[1].created_at;
-              } else if (scheduledRuns.length > 0) {
-                lastScheduledRunTime = scheduledRuns[0].created_at;
-              }
-              
-              core.setOutput('last_run_timestamp', lastScheduledRunTime);
-              console.log(`Mốc thời gian chạy tự động gần nhất: ${lastScheduledRunTime}`);
-            } catch (error) {
-              console.log(`Lỗi khi lấy timestamp: ${error.message}. Sẽ lấy mặc định 24h trước.`);
-              core.setOutput('last_run_timestamp', '');
-            }
+          chrome-version: stable
 
-      - name: Install Dependencies
+      - name: Cài đặt thư viện Python
         run: |
           python -m pip install --upgrade pip
           pip install selenium webdriver-manager google-genai
 
-      - name: Execute TBMT Bot
+      - name: Lấy mốc thời gian lần chạy tự động (schedule) thành công gần nhất
+        id: get_last_run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LAST_RUN=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/actions/workflows/tbmt_crawl.yml/runs?event=schedule&status=success&per_page=1" \
+            --jq '.workflow_runs[0].created_at // empty')
+          echo "last_run=$LAST_RUN" >> $GITHUB_OUTPUT
+          echo "Mốc lịch chạy tự động TBMT thành công gần nhất: $LAST_RUN"
+
+      - name: Chạy Bot TBMT
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
-          LAST_RUN_TIMESTAMP: ${{ steps.last_run.outputs.last_run_timestamp }}
+          LAST_RUN_TIMESTAMP: ${{ steps.get_last_run.outputs.last_run }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: python crawl_tbmt.py
