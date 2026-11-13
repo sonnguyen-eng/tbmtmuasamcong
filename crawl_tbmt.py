@@ -278,4 +278,285 @@ def fetch_tbmt_today(driver):
     .catch(err => callback({ error: err.toString() }));
     """
 
-    query_plan = [(kw, SPECIFIC_MAX_RECORDS) for kw in
+    query_plan = [(kw, SPECIFIC_MAX_RECORDS) for kw in KEYWORDS] + [(kw, BROAD_MAX_RECORDS) for kw in BROAD_QUERIES]
+
+    for kw, max_records in query_plan:
+        print(f"-> Truy vấn API Smart Search cho: '{kw}' (Giới hạn tối đa {max_records} bản ghi)...")
+        matched_in_kw = 0
+        fetched_in_kw = 0
+        page_num = 0
+
+        while fetched_in_kw < max_records:
+            current_page_size = min(100, max_records - fetched_in_kw)
+            try:
+                res = driver.execute_async_script(
+                    js_fetch_search,
+                    kw,
+                    page_num,
+                    current_page_size,
+                    from_date_iso,
+                    to_date_iso,
+                    token_val
+                )
+                data_list = []
+                
+                if isinstance(res, list) and len(res) > 0:
+                    first_item = res[0]
+                    if isinstance(first_item, dict):
+                        data_list = first_item.get("page", {}).get("content", [])
+                elif isinstance(res, dict):
+                    data_list = res.get("page", {}).get("content", [])
+
+                if not isinstance(data_list, list) or not data_list:
+                    break
+
+                fetched_in_kw += len(data_list)
+                older_count = 0
+
+                for item in data_list:
+                    if not isinstance(item, dict):
+                        continue
+
+                    if not is_published_in_time_window(item):
+                        older_count += 1
+                        continue
+
+                    code = str(item.get("notifyNo") or item.get("notifyNoStand") or item.get("bidNo") or item.get("id") or "")
+                    if not code or code in unique_matches or code in scanned_codes:
+                        continue
+
+                    scanned_codes.add(code)
+
+                    notify_ver = str(item.get("notifyVersion") or "00")
+                    bid_field = str(item.get("bidField") or "HH")
+
+                    bid_name_raw = item.get("bidName")
+                    if isinstance(bid_name_raw, list) and len(bid_name_raw) > 0:
+                        title = str(bid_name_raw[0])
+                    else:
+                        title = str(bid_name_raw or item.get("name") or "")
+                        
+                    investor = str(item.get("investorName") or item.get("procuringEntityName") or "")
+                    
+                    est_amount_raw = item.get("estAmount") or item.get("investTotal") or item.get("bidPrice")
+                    formatted_amount = format_currency(est_amount_raw)
+                    detail_url = build_detail_url(item, code, notify_ver)
+
+                    raw_str = json.dumps(item, ensure_ascii=False).lower()
+
+                    # Kiểm tra địa phương trước để chỉ Deep-Scan Biểu mẫu 10B cho các gói thuộc 14 tỉnh
+                    matched_province = check_location(item, raw_str)
+                    if not matched_province:
+                        continue
+
+                    # DEEP-SCAN bóc tách Biểu mẫu 10B/HSMT
+                    hsmt_str = get_hsmt_form_values(driver, code, notify_ver, bid_field)
+                    if hsmt_str:
+                        raw_str += " " + hsmt_str
+
+                    matched_kws = [k for k in KEYWORDS if k.lower() in raw_str]
+                    if matched_kws:
+                        matched_in_kw += 1
+                        location_detail = "Tiêu đề" if any(k.lower() in f"{code} {title}".lower() for k in matched_kws) else "Chi tiết Hàng hóa / Biểu mẫu 10B"
+                        unique_matches[code] = {
+                            "code": code,
+                            "notify_ver": notify_ver,
+                            "title": title,
+                            "amount": formatted_amount,
+                            "investor": investor,
+                            "province": ", ".join(matched_province),
+                            "matched_kw": ", ".join(matched_kws),
+                            "location": location_detail,
+                            "detail_url": detail_url,
+                            "snippet": raw_str[:1200]
+                        }
+
+                if len(data_list) < current_page_size or older_count > len(data_list) * 0.7:
+                    break
+
+                page_num += 1
+                time.sleep(0.4)
+            except Exception as e:
+                print(f"[CẢNH BÁO FETCH TBMT] Từ khóa '{kw}' (Trang {page_num}): {e}")
+                break
+
+        print(f"    + Server trả về {fetched_in_kw} bản ghi -> Khớp khung thời gian, địa phương & từ khóa: {matched_in_kw} gói thầu.")
+        time.sleep(0.3)
+
+    return list(unique_matches.values())
+
+# 10. PHÂN TÍCH VỚI GEMINI AI (CHIA LÔ + RETRY 503 + FALLBACK MODEL + XOAY KEY)
+def analyze_batch_with_gemini(batch_items):
+    global current_key_index, GEMINI_API_KEYS
+    from google import genai
+    from google.genai import types
+
+    models_to_try = [PRIMARY_MODEL, FALLBACK_MODEL]
+
+    prompt = f"""
+Bạn là chuyên gia phân tích dữ liệu đấu thầu Y tế.
+Dưới đây là danh sách các Thông báo mời thầu (TBMT) phát hành từ {START_TIME.strftime('%H:%M %d/%m/%Y')} đến {TODAY_STR} đã lọc theo địa phương và 19 từ khóa y tế.
+
+Yêu cầu:
+1. Giữ nguyên toàn bộ các gói thầu trong danh sách đầu vào.
+2. Viết 1 câu tóm tắt ngắn gọn lý do phù hợp hoặc mặt hàng chính trong gói thầu.
+3. Trả về đúng mảng JSON chứa các object đầy đủ thuộc tính và thêm "reason".
+
+Danh sách:
+{json.dumps(batch_items, ensure_ascii=False, indent=2)}
+Chỉ trả về chuỗi JSON thuần túy (không kèm markdown).
+"""
+
+    for model_name in models_to_try:
+        while current_key_index < len(GEMINI_API_KEYS):
+            key = GEMINI_API_KEYS[current_key_index]
+            client = genai.Client(api_key=key)
+
+            for attempt in range(3):
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(response_mime_type="application/json")
+                    )
+                    if response and response.text:
+                        return json.loads(response.text.strip())
+                except Exception as e:
+                    error_msg = str(e)
+                    print(f"[CẢNH BÁO AI GOOGLE-GENAI ({model_name})] {error_msg}")
+
+                    if any(k in error_msg.lower() for k in ["429", "resource_exhausted", "quota"]):
+                        if current_key_index + 1 < len(GEMINI_API_KEYS):
+                            current_key_index += 1
+                            print(f"🔄 Đã đổi sang Gemini API Key thứ [{current_key_index + 1}/{len(GEMINI_API_KEYS)}]")
+                            break
+                        return batch_items
+
+                    if "503" in error_msg or "unavailable" in error_msg.lower():
+                        wait_s = 12 * (attempt + 1)
+                        print(f"⏳ Model {model_name} đang quá tải, thử lại sau {wait_s}s...")
+                        time.sleep(wait_s)
+                        continue
+
+                    break
+            else:
+                break
+
+    return batch_items
+
+
+def analyze_with_gemini(candidates):
+    if not candidates or not GEMINI_API_KEYS:
+        return candidates
+
+    batch_size = 15
+    analyzed_results = []
+    for i in range(0, len(candidates), batch_size):
+        batch = candidates[i:i + batch_size]
+        print(f"🧠 Đang phân tích AI lô {i // batch_size + 1} ({len(batch)} gói thầu)...")
+        analyzed_batch = analyze_batch_with_gemini(batch)
+        if isinstance(analyzed_batch, list) and len(analyzed_batch) == len(batch):
+            analyzed_results.extend(analyzed_batch)
+        else:
+            analyzed_results.extend(batch)
+        time.sleep(1)
+
+    return analyzed_results
+
+# 11. GỬI EMAIL BÁO CÁO
+def send_email_report(matched_list):
+    if not RECEIVER_EMAIL:
+        print("[LỖI CẤU HÌNH] Chưa khai báo email nhận.")
+        return
+
+    receiver_list = [e.strip() for e in RECEIVER_EMAIL.replace("\n", "").split(",") if e.strip()]
+    if not receiver_list:
+        print("[LỖI CẤU HÌNH] Danh sách email nhận không hợp lệ.")
+        return
+
+    email_subject = f"[TBMT TBYT - Địa bàn phụ trách] Báo cáo gói thầu ({START_TIME.strftime('%H:%M %d/%m')} - {TODAY_STR})"
+
+    if not matched_list:
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; padding: 20px;">
+            <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT)</h3>
+            <p>Hệ thống đã quét dữ liệu từ <b>{START_TIME.strftime('%H:%M %d/%m/%Y')}</b> đến <b>{TODAY_STR}</b> nhưng chưa phát hiện gói thầu mới khớp 19 từ khóa y tế tại 14 địa phương theo dõi.</p>
+        </div>
+        """
+    else:
+        rows = ""
+        for idx, item in enumerate(matched_list, 1):
+            code = item.get("code", "")
+            title = item.get("title", "")
+            amount = item.get("amount", "0.00")
+            investor = item.get("investor", "")
+            province = item.get("province", "Theo dõi")
+            location = item.get("location", "Biểu mẫu / Hàng hóa")
+            reason = item.get("reason") or "Khớp từ khóa theo dõi y tế trong Biểu mẫu 10B/HSMT"
+            matched_kw = item.get("matched_kw", "")
+            detail_url = item.get("detail_url") or f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index"
+            
+            rows += f"""
+            <tr>
+                <td align="center">{idx}</td>
+                <td><b>{code}</b></td>
+                <td>{title}</td>
+                <td align="right"><b><span style="color: #2e7d32;">{amount}</span></b></td>
+                <td>{investor}</td>
+                <td align="center"><b><span style="color: #d9534f;">{province}</span></b></td>
+                <td align="center"><span style="background-color: #ffffcc; padding: 3px 6px; border-radius: 3px;">{matched_kw}</span></td>
+                <td align="center"><i>{location}</i></td>
+                <td><small style="color: #333;">{reason}</small></td>
+                <td align="center"><a href="{detail_url}" target="_blank" style="color: #0275d8; font-weight: bold;">Xem ngay</a></td>
+            </tr>
+            """
+            
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; padding: 20px;">
+            <h2 style="color: #0275d8;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT)</h2>
+            <p>Khung thời gian quét: từ <b>{START_TIME.strftime('%H:%M %d/%m/%Y')}</b> đến <b>{TODAY_STR}</b></p>
+            <p>Đã lọc phát hiện <b>{len(matched_list)}</b> gói thầu Y tế thuộc địa bàn phụ trách:</p>
+            <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; border-color: #ddd;">
+                <tr style="background-color: #fff2e6;">
+                    <th align="center">STT</th>
+                    <th>Mã TBMT</th>
+                    <th>Tên Gói Thầu</th>
+                    <th align="right">Giá Trị Gói Thầu (VND)</th>
+                    <th>Bên Mời Thầu</th>
+                    <th align="center">Tỉnh / TP</th>
+                    <th align="center">Từ Khóa Khớp</th>
+                    <th align="center">Vị Trí Khớp</th>
+                    <th>Phân Tích Chi Tiết</th>
+                    <th align="center">Chi Tiết</th>
+                </tr>
+                {rows}
+            </table>
+        </div>
+        """
+
+    if SENDER_EMAIL and SENDER_PASSWORD:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = email_subject
+        msg["From"] = SENDER_EMAIL
+        msg["To"] = ", ".join(receiver_list)
+        msg.attach(MIMEText(html_body, "html"))
+        try:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                server.login(SENDER_EMAIL, SENDER_PASSWORD)
+                server.sendmail(SENDER_EMAIL, receiver_list, msg.as_string())
+            print(f"[SUCCESS] Đã gửi báo cáo TBMT thành công tới các email: {', '.join(receiver_list)}!")
+        except Exception as e:
+            print(f"[LỖI GỬI EMAIL SMTP] {e}")
+
+def main():
+    print(f"=== CRAWL & DEEP-SCAN TBMT (Khung quét: {START_TIME.strftime('%H:%M %d/%m/%Y')} -> {TODAY_STR}) ===")
+    driver = init_driver()
+    try:
+        matched_list = fetch_tbmt_today(driver)
+        final_matches = analyze_with_gemini(matched_list)
+        send_email_report(final_matches)
+    finally:
+        driver.quit()
+
+if __name__ == "__main__":
+    main()
