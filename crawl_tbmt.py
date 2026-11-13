@@ -30,13 +30,30 @@ KEYWORDS = [
     "Bồn oxy lỏng", "Oxy trung tâm"
 ]
 
-# 2. DANH SÁCH 14 TỈNH / THÀNH PHỐ MỤC TIÊU
+# 2. DANH SÁCH 14 TỈNH / THÀNH PHỐ MỤC TIÊU (BAO GỒM TÊN TỈNH CŨ/MỚI & VIẾT TẮT)
 TARGET_LOCATIONS = [
     "Thành phố Đà Nẵng", "Tỉnh Quảng Ngãi", "Tỉnh Đắc Lắc", "Tỉnh Đắk Lắk", "Tỉnh Gia Lai", 
     "Tỉnh Khánh Hòa", "Tỉnh Lâm Đồng", "Thành phố Hồ Chí Minh", "Thành phố Đồng Nai", 
     "Tỉnh Tây Ninh", "Tỉnh Đồng Tháp", "Tỉnh Vĩnh Long", "Tỉnh An Giang", 
     "Thành phố Cần Thơ", "Tỉnh Cà Mau"
 ]
+
+LOCATION_ALIASES = {
+    "Thành phố Đà Nẵng": ["đà nẵng", "quảng nam", "tam kỳ", "hội an"],
+    "Tỉnh Quảng Ngãi": ["quảng ngãi", "kon tum"],
+    "Tỉnh Đắk Lắk": ["đắk lắk", "đắc lắc", "tây nguyên", "buôn ma thuột", "phú yên", "tuy hòa"],
+    "Tỉnh Gia Lai": ["gia lai", "pleiku", "bình định", "quy nhơn"],
+    "Tỉnh Khánh Hòa": ["khánh hòa", "nha trang", "ninh thuận", "phan rang"],
+    "Tỉnh Lâm Đồng": ["lâm đồng", "đà lạt", "bảo lộc", "đắk nông", "bình thuận", "phan thiết"],
+    "Thành phố Hồ Chí Minh": ["hồ chí minh", "tp.hcm", "tphcm", "tp hcm", "sài gòn", "thủ đức", "bình dương", "bà rịa", "vũng tàu"],
+    "Thành phố Đồng Nai": ["đồng nai", "biên hòa", "long khánh", "bình phước", "đồng xoài"],
+    "Tỉnh Tây Ninh": ["tây ninh", "long an", "tân an"],
+    "Tỉnh Đồng Tháp": ["đồng tháp", "cao lãnh", "sa đéc", "tiền giang", "mỹ tho"],
+    "Tỉnh Vĩnh Long": ["vĩnh long", "bến tre", "trà vinh"],
+    "Tỉnh An Giang": ["an giang", "long xuyên", "châu đốc", "kiên giang", "rạch giá", "phú quốc"],
+    "Thành phố Cần Thơ": ["cần thơ", "hậu giang", "sóc trăng"],
+    "Tỉnh Cà Mau": ["cà mau", "bạc liêu"]
+}
 
 TZ_VN = timezone(timedelta(hours=7))
 NOW_VN = datetime.now(TZ_VN)
@@ -53,6 +70,11 @@ else:
 
 BASE_DOMAIN = "muasamcong.mof.gov.vn"
 PRIMARY_MODEL = "gemini-3.8-flash"
+FALLBACK_MODEL = "gemini-2.5-flash"
+
+# Thông số tối ưu: Quét 5 trang x 100 bản ghi = 500 bản ghi tối đa mỗi từ khóa
+PAGE_SIZE = 100
+MAX_PAGES_PER_QUERY = 5
 
 # 3. KHỞI TẠO CHROME HEADLESS
 def init_driver():
@@ -67,7 +89,7 @@ def init_driver():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     return driver
 
-# 4. LỌC THỜI GIAN ĐĂNG TRONG KHOẢNG [START_TIME -> NOW_VN]
+# 4. LỌC THỜI GIAN ĐĂNG TRONG KHOẢNG [START_TIME -> NOW_VN] (Chuẩn giờ VN UTC+7)
 def is_published_in_time_window(item):
     pub_date_str = item.get("publicDate") or item.get("originalPublicDate") or ""
     if not pub_date_str:
@@ -75,7 +97,7 @@ def is_published_in_time_window(item):
     
     try:
         clean_date_str = pub_date_str.split(".")[0].replace("Z", "")
-        dt_obj = datetime.strptime(clean_date_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).astimezone(TZ_VN)
+        dt_obj = datetime.strptime(clean_date_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=TZ_VN)
         return START_TIME <= dt_obj <= NOW_VN
     except Exception:
         return True
@@ -100,7 +122,7 @@ def check_location(item, raw_str):
     found_locs = []
     investor = str(item.get("investorName") or item.get("procuringEntityName") or "").lower()
     title = str(item.get("bidName") or "").lower()
-    search_text = f"{investor} {title} {raw_str}"
+    search_text = f"{investor} {title} {raw_str}".lower()
 
     locations_arr = item.get("locations", [])
     if isinstance(locations_arr, list):
@@ -110,16 +132,9 @@ def check_location(item, raw_str):
                 dist_name = loc.get("districtName", "")
                 search_text += f" {prov_name} {dist_name}".lower()
 
-    if "đắk lắk" in search_text or "đắc lắc" in search_text or "tây nguyên" in search_text or "buôn ma thuột" in search_text:
-        found_locs.append("Tỉnh Đắk Lắk")
-
-    for target in TARGET_LOCATIONS:
-        clean_kw = target.replace("Thành phố ", "").replace("Tỉnh ", "").lower()
-        if clean_kw in search_text:
-            if clean_kw == "đồng nai":
-                found_locs.append("Thành phố Đồng Nai")
-            elif clean_kw not in ["đắk lắk", "đắc lắc"]:
-                found_locs.append(target)
+    for canonical_name, aliases in LOCATION_ALIASES.items():
+        if any(alias in search_text for alias in aliases):
+            found_locs.append(canonical_name)
 
     return list(set(found_locs))
 
@@ -185,7 +200,7 @@ def build_detail_url(item, code, notify_ver):
     url += "&processApply=LDT&bidMode=1_MTHS&isInternet=1"
     return url
 
-# 9. TRÍCH XUẤT THÔNG TIN TBMT THEO KHUNG THỜI GIAN
+# 9. TRÍCH XUẤT THÔNG TIN TBMT THEO KHUNG THỜI GIAN (TỐI ĐA 500 BẢN GHI/TỪ KHÓA)
 def fetch_tbmt_today(driver):
     print(f"-> Mở Session Mua Sắm Công TBMT (Khung quét: {START_TIME.strftime('%H:%M %d/%m/%Y')} -> {TODAY_STR})...")
     driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
@@ -210,11 +225,19 @@ def fetch_tbmt_today(driver):
         print(f"-> Token bảo mật trích xuất từ Session: {token_val[:20]}...")
 
     unique_matches = {}
+    scanned_codes = set()
+
+    from_date_iso = START_TIME.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    to_date_iso = NOW_VN.strftime("%Y-%m-%dT%H:%M:%S.999Z")
 
     js_fetch_search = """
     var callback = arguments[arguments.length - 1];
     var kw = arguments[0];
-    var token = arguments[1];
+    var pageNum = arguments[1];
+    var pageSize = arguments[2];
+    var fromDate = arguments[3];
+    var toDate = arguments[4];
+    var token = arguments[5];
     
     let url = '/o/egp-portal-contractor-selection-v2/services/smart/search';
     if (token) {
@@ -228,16 +251,17 @@ def fetch_tbmt_today(driver):
             'Accept': 'application/json, text/plain, */*'
         },
         body: JSON.stringify([{
-            pageSize: 50,
-            pageNumber: "0",
+            pageSize: pageSize,
+            pageNumber: String(pageNum),
             query: [{
                 index: "es-contractor-selection",
                 keyWord: kw,
                 matchType: "all-1",
-                matchFields: ["notifyNo", "bidName"],
+                matchFields: ["notifyNo", "bidName", "planName"],
                 filters: [
                     { fieldName: "type", searchType: "in", fieldValues: ["es-notify-contractor"] },
-                    { fieldName: "caseKHKQ", searchType: "not_in", fieldValues: ["1"] }
+                    { fieldName: "caseKHKQ", searchType: "not_in", fieldValues: ["1"] },
+                    { fieldName: "publicDate", searchType: "range", from: fromDate, to: toDate }
                 ]
             }]
         }])
@@ -247,98 +271,120 @@ def fetch_tbmt_today(driver):
     .catch(err => callback({ error: err.toString() }));
     """
 
-    search_queries = KEYWORDS + ["thiết bị y tế", "y tế", "bệnh viện", "dụng cụ y tế"]
+    search_queries = KEYWORDS + ["thiết bị y tế", "trang thiết bị y tế", "y tế", "bệnh viện", "dụng cụ y tế", "vật tư y tế"]
 
     for kw in search_queries:
         print(f"-> Truy vấn API Smart Search cho: '{kw}'...")
-        try:
-            res = driver.execute_async_script(js_fetch_search, kw, token_val)
-            data_list = []
-            
-            if isinstance(res, list) and len(res) > 0:
-                first_item = res[0]
-                if isinstance(first_item, dict):
-                    data_list = first_item.get("page", {}).get("content", [])
-            elif isinstance(res, dict):
-                data_list = res.get("page", {}).get("content", [])
+        matched_in_kw = 0
+        fetched_in_kw = 0
 
-            if not isinstance(data_list, list):
+        for page_num in range(MAX_PAGES_PER_QUERY):
+            try:
+                res = driver.execute_async_script(
+                    js_fetch_search,
+                    kw,
+                    page_num,
+                    PAGE_SIZE,
+                    from_date_iso,
+                    to_date_iso,
+                    token_val
+                )
                 data_list = []
-
-            matched_in_kw = 0
-            for item in data_list:
-                if not isinstance(item, dict):
-                    continue
-
-                if not is_published_in_time_window(item):
-                    continue
-
-                code = str(item.get("notifyNo") or item.get("notifyNoStand") or item.get("bidNo") or item.get("id") or "")
-                notify_ver = str(item.get("notifyVersion") or "00")
-                bid_field = str(item.get("bidField") or "HH")
-
-                bid_name_raw = item.get("bidName")
-                if isinstance(bid_name_raw, list) and len(bid_name_raw) > 0:
-                    title = str(bid_name_raw[0])
-                else:
-                    title = str(bid_name_raw or item.get("name") or "")
-                    
-                investor = str(item.get("investorName") or item.get("procuringEntityName") or "")
                 
-                est_amount_raw = item.get("estAmount") or item.get("investTotal") or item.get("bidPrice")
-                formatted_amount = format_currency(est_amount_raw)
-                detail_url = build_detail_url(item, code, notify_ver)
+                if isinstance(res, list) and len(res) > 0:
+                    first_item = res[0]
+                    if isinstance(first_item, dict):
+                        data_list = first_item.get("page", {}).get("content", [])
+                elif isinstance(res, dict):
+                    data_list = res.get("page", {}).get("content", [])
 
-                raw_str = json.dumps(item, ensure_ascii=False).lower()
+                if not isinstance(data_list, list) or not data_list:
+                    break
 
-                # DEEP-SCAN bóc tách Biểu mẫu 10B/HSMT
-                if code:
+                fetched_in_kw += len(data_list)
+                older_count = 0
+
+                for item in data_list:
+                    if not isinstance(item, dict):
+                        continue
+
+                    if not is_published_in_time_window(item):
+                        older_count += 1
+                        continue
+
+                    code = str(item.get("notifyNo") or item.get("notifyNoStand") or item.get("bidNo") or item.get("id") or "")
+                    if not code or code in unique_matches or code in scanned_codes:
+                        continue
+
+                    scanned_codes.add(code)
+
+                    notify_ver = str(item.get("notifyVersion") or "00")
+                    bid_field = str(item.get("bidField") or "HH")
+
+                    bid_name_raw = item.get("bidName")
+                    if isinstance(bid_name_raw, list) and len(bid_name_raw) > 0:
+                        title = str(bid_name_raw[0])
+                    else:
+                        title = str(bid_name_raw or item.get("name") or "")
+                        
+                    investor = str(item.get("investorName") or item.get("procuringEntityName") or "")
+                    
+                    est_amount_raw = item.get("estAmount") or item.get("investTotal") or item.get("bidPrice")
+                    formatted_amount = format_currency(est_amount_raw)
+                    detail_url = build_detail_url(item, code, notify_ver)
+
+                    raw_str = json.dumps(item, ensure_ascii=False).lower()
+
+                    # Kiểm tra địa phương trước để chỉ Deep-Scan Biểu mẫu 10B cho các gói thuộc 14 tỉnh
+                    matched_province = check_location(item, raw_str)
+                    if not matched_province:
+                        continue
+
+                    # DEEP-SCAN bóc tách Biểu mẫu 10B/HSMT
                     hsmt_str = get_hsmt_form_values(driver, code, notify_ver, bid_field)
                     if hsmt_str:
                         raw_str += " " + hsmt_str
 
-                matched_kws = [k for k in KEYWORDS if k.lower() in raw_str]
-                if matched_kws:
-                    matched_province = check_location(item, raw_str)
-                    if matched_province:
+                    matched_kws = [k for k in KEYWORDS if k.lower() in raw_str]
+                    if matched_kws:
                         matched_in_kw += 1
-                        if code and code not in unique_matches:
-                            location_detail = "Tiêu đề" if any(k.lower() in f"{code} {title}".lower() for k in matched_kws) else "Chi tiết Hàng hóa / Biểu mẫu 10B"
-                            unique_matches[code] = {
-                                "code": code,
-                                "notify_ver": notify_ver,
-                                "title": title,
-                                "amount": formatted_amount,
-                                "investor": investor,
-                                "province": ", ".join(matched_province),
-                                "matched_kw": ", ".join(matched_kws),
-                                "location": location_detail,
-                                "detail_url": detail_url,
-                                "snippet": raw_str[:1200]
-                            }
-            print(f"    + Server trả về {len(data_list)} bản ghi -> Khớp khung thời gian, địa phương & từ khóa: {matched_in_kw} gói thầu.")
-            time.sleep(0.5)
-        except Exception as e:
-            print(f"[CẢNH BÁO FETCH TBMT] Từ khóa '{kw}': {e}")
-            continue
+                        location_detail = "Tiêu đề" if any(k.lower() in f"{code} {title}".lower() for k in matched_kws) else "Chi tiết Hàng hóa / Biểu mẫu 10B"
+                        unique_matches[code] = {
+                            "code": code,
+                            "notify_ver": notify_ver,
+                            "title": title,
+                            "amount": formatted_amount,
+                            "investor": investor,
+                            "province": ", ".join(matched_province),
+                            "matched_kw": ", ".join(matched_kws),
+                            "location": location_detail,
+                            "detail_url": detail_url,
+                            "snippet": raw_str[:1200]
+                        }
+
+                # Tự động dừng phân trang nếu trang chưa đầy hoặc đa số bản ghi đã cũ hơn 24h
+                if len(data_list) < PAGE_SIZE or older_count > len(data_list) * 0.7:
+                    break
+
+                time.sleep(0.4)
+            except Exception as e:
+                print(f"[CẢNH BÁO FETCH TBMT] Từ khóa '{kw}' (Trang {page_num}): {e}")
+                break
+
+        print(f"    + Server trả về {fetched_in_kw} bản ghi -> Khớp khung thời gian, địa phương & từ khóa: {matched_in_kw} gói thầu.")
+        time.sleep(0.3)
 
     return list(unique_matches.values())
 
-# 10. PHÂN TÍCH VỚI GEMINI AI (gemini-3.8-flash HOẶC TỰ ĐỔI API KEY NẾU HẾT QUOTA)
-def analyze_with_gemini(candidates):
+# 10. PHÂN TÍCH VỚI GEMINI AI (CHIA LÔ + RETRY 503 + FALLBACK MODEL + XOAY KEY)
+def analyze_batch_with_gemini(batch_items):
     global current_key_index, GEMINI_API_KEYS
-    if not candidates or not GEMINI_API_KEYS:
-        return candidates
+    from google import genai
+    from google.genai import types
 
-    while True:
-        try:
-            from google import genai
-            from google.genai import types
-            
-            key = GEMINI_API_KEYS[current_key_index]
-            client = genai.Client(api_key=key)
-            
-            prompt = f"""
+    models_to_try = [PRIMARY_MODEL, FALLBACK_MODEL]
+
+    prompt = f"""
 Bạn là chuyên gia phân tích dữ liệu đấu thầu Y tế.
 Dưới đây là danh sách các Thông báo mời thầu (TBMT) phát hành từ {START_TIME.strftime('%H:%M %d/%m/%Y')} đến {TODAY_STR} đã lọc theo địa phương và 19 từ khóa y tế.
 
@@ -348,30 +394,65 @@ Yêu cầu:
 3. Trả về đúng mảng JSON chứa các object đầy đủ thuộc tính và thêm "reason".
 
 Danh sách:
-{json.dumps(candidates, ensure_ascii=False, indent=2)}
+{json.dumps(batch_items, ensure_ascii=False, indent=2)}
 Chỉ trả về chuỗi JSON thuần túy (không kèm markdown).
 """
-            response = client.models.generate_content(
-                model=PRIMARY_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json")
-            )
-            
-            if response and response.text:
-                content = response.text.strip()
-                return json.loads(content)
 
-        except Exception as e:
-            error_msg = str(e)
-            print(f"[CẢNH BÁO AI GOOGLE-GENAI] {error_msg}")
-            if any(k in error_msg.lower() for k in ["429", "resource_exhausted", "quota"]):
-                if current_key_index + 1 < len(GEMINI_API_KEYS):
-                    current_key_index += 1
-                    print(f"🔄 Đã đổi sang Gemini API Key thứ [{current_key_index + 1}/{len(GEMINI_API_KEYS)}]")
-                    continue
-            break
-    
-    return candidates
+    for model_name in models_to_try:
+        while current_key_index < len(GEMINI_API_KEYS):
+            key = GEMINI_API_KEYS[current_key_index]
+            client = genai.Client(api_key=key)
+
+            for attempt in range(3):
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(response_mime_type="application/json")
+                    )
+                    if response and response.text:
+                        return json.loads(response.text.strip())
+                except Exception as e:
+                    error_msg = str(e)
+                    print(f"[CẢNH BÁO AI GOOGLE-GENAI ({model_name})] {error_msg}")
+
+                    if any(k in error_msg.lower() for k in ["429", "resource_exhausted", "quota"]):
+                        if current_key_index + 1 < len(GEMINI_API_KEYS):
+                            current_key_index += 1
+                            print(f"🔄 Đã đổi sang Gemini API Key thứ [{current_key_index + 1}/{len(GEMINI_API_KEYS)}]")
+                            break
+                        return batch_items
+
+                    if "503" in error_msg or "unavailable" in error_msg.lower():
+                        wait_s = 12 * (attempt + 1)
+                        print(f"⏳ Model {model_name} đang quá tải, thử lại sau {wait_s}s...")
+                        time.sleep(wait_s)
+                        continue
+
+                    break
+            else:
+                break
+
+    return batch_items
+
+
+def analyze_with_gemini(candidates):
+    if not candidates or not GEMINI_API_KEYS:
+        return candidates
+
+    batch_size = 15
+    analyzed_results = []
+    for i in range(0, len(candidates), batch_size):
+        batch = candidates[i:i + batch_size]
+        print(f"🧠 Đang phân tích AI lô {i // batch_size + 1} ({len(batch)} gói thầu)...")
+        analyzed_batch = analyze_batch_with_gemini(batch)
+        if isinstance(analyzed_batch, list) and len(analyzed_batch) == len(batch):
+            analyzed_results.extend(analyzed_batch)
+        else:
+            analyzed_results.extend(batch)
+        time.sleep(1)
+
+    return analyzed_results
 
 # 11. GỬI EMAIL BÁO CÁO
 def send_email_report(matched_list):
