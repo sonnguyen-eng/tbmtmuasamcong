@@ -32,7 +32,7 @@ KEYWORDS = [
     "ERCP", "Monitor theo dõi bệnh nhân", "Máy hấp tiệt trùng", "Nhiệt độ thấp", 
     "máy gây mê", "Bơm tiêm điện", "máy truyền dịch", "bàn khám sản", 
     "Monitor sản khoa", "máy hấp ướt", "giường ICU", "giường cấp cứu", 
-    "giường đa năng", "giường bệnh", "Bồn oxy lỏng", "Oxy trung tâm"
+    "giường đa năng", "giường bệnh", "Bồn oxy lỏng", "Oxy trung tâm", "X-Quang"
 ]
 
 BROAD_QUERIES = [
