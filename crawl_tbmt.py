@@ -34,7 +34,7 @@ KEYWORDS = [
 ]
 
 BROAD_QUERIES = [
-    "thiết bị y tế", "y tế", "bệnh viện", "dụng cụ y tế"
+    "thiết bị y tế", "y tế", "bệnh viện", "dụng cụ y tế", "mua sắm", "trang thiết bị"
 ]
 
 # 2. DANH SÁCH 14 TỈNH / THÀNH PHỐ MỤC TIÊU
@@ -50,11 +50,11 @@ NOW_VN = datetime.now(TZ_VN)
 TODAY_STR = NOW_VN.strftime("%H:%M %d/%m/%Y")
 
 # Tính toán mốc START_TIME dựa trên lần chạy tự động (schedule) thành công gần nhất
-# Lùi thêm 10 phút đệm an toàn để bù trừ độ trễ khởi động runner của GitHub Actions
+# Lùi thêm 15 phút đệm an toàn để bù trừ độ trễ khởi động runner của GitHub Actions
 if LAST_RUN_ENV:
     try:
         parsed_last_run = datetime.fromisoformat(LAST_RUN_ENV.replace("Z", "+00:00")).astimezone(TZ_VN)
-        START_TIME = parsed_last_run - timedelta(minutes=10)
+        START_TIME = parsed_last_run - timedelta(minutes=15)
     except Exception:
         START_TIME = NOW_VN - timedelta(hours=24)
 else:
@@ -66,7 +66,7 @@ FALLBACK_MODEL = "gemini-3.8-flash-lite"
 
 # Phân tầng giới hạn bản ghi quét (Server trả về tối đa 50 bản ghi/trang):
 # - 19 từ khóa sản phẩm cụ thể: tối đa 150 bản ghi (3 trang x 50)
-# - 4 từ khóa chung mở rộng: tối đa 500 bản ghi (10 trang x 50)
+# - 6 từ khóa chung mở rộng: tối đa 500 bản ghi (10 trang x 50)
 SERVER_MAX_PAGE_SIZE = 50
 SPECIFIC_MAX_RECORDS = 150
 BROAD_MAX_RECORDS = 500
@@ -93,7 +93,8 @@ def is_published_in_time_window(item):
     
     try:
         clean_date_str = pub_date_str.split(".")[0].replace("Z", "")
-        dt_obj = datetime.strptime(clean_date_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).astimezone(TZ_VN)
+        # publicDate từ server Mua sắm công ở múi giờ Việt Nam (UTC+7)
+        dt_obj = datetime.strptime(clean_date_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=TZ_VN)
         return START_TIME <= dt_obj <= NOW_VN
     except Exception:
         return True
@@ -143,6 +144,7 @@ def check_location(item, raw_str):
 
 # 7. BÓC TÁCH DEEP-SCAN SÂU BIỂU MẪU 10B / HSMT (API GET-ALL-HSMT)
 def get_hsmt_form_values(driver, notify_no, notify_version="00", bid_field="HH"):
+    clean_bid_field = (bid_field or "").strip() or "HH"
     js_get_hsmt = """
     var callback = arguments[arguments.length - 1];
     var notifyNo = arguments[0];
@@ -169,7 +171,7 @@ def get_hsmt_form_values(driver, notify_no, notify_version="00", bid_field="HH")
     .catch(err => callback({ error: err.toString() }));
     """
     try:
-        res = driver.execute_async_script(js_get_hsmt, notify_no, notify_version, bid_field)
+        res = driver.execute_async_script(js_get_hsmt, notify_no, notify_version, clean_bid_field)
         if isinstance(res, (list, dict)):
             return json.dumps(res, ensure_ascii=False).lower()
     except Exception:
@@ -203,19 +205,13 @@ def build_detail_url(item, code, notify_ver):
     url += "&processApply=LDT&bidMode=1_MTHS&isInternet=1"
     return url
 
-# 9. MỞ SESSION HỢP LỆ & TRÍCH XUẤT TOKEN TỪ CỔNG MUA SẮM CÔNG
-def open_valid_session_and_token(driver):
-    candidate_urls = [
-        f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index",
-        f"https://{BASE_DOMAIN}/vi/home",
-        f"https://{BASE_DOMAIN}/web/guest/home",
-        f"https://{BASE_DOMAIN}/"
-    ]
-
+# 9. TRÍCH XUẤT & LÀM MỚI RECAPTCHA TOKEN TỪ SESSION TRÌNH DUYỆT
+def get_latest_token_from_perf(driver):
     js_get_token = """
     let token = '';
     let entries = window.performance.getEntriesByType('resource');
-    for (let e of entries) {
+    for (let i = entries.length - 1; i >= 0; i--) {
+        let e = entries[i];
         if (e.name && e.name.includes('token=')) {
             let match = e.name.match(/token=([^&]+)/);
             if (match) {
@@ -226,65 +222,54 @@ def open_valid_session_and_token(driver):
     }
     return token;
     """
+    return driver.execute_script(js_get_token) or ""
 
-    session_opened = False
-    for url in candidate_urls:
-        print(f"-> Đang thử mở Session tại: {url}")
-        try:
-            driver.get(url)
-            time.sleep(8)
-            page_title = (driver.title or "").strip()
-            print(f"   + Page Title nhận được: '{page_title}'")
-            if "404" not in page_title and "Not Found" not in page_title and page_title != "":
-                session_opened = True
-                break
-        except Exception as e:
-            print(f"   + Lỗi kết nối URL {url}: {e}")
 
-    if not session_opened:
-        return False, ""
-
-    token_val = driver.execute_script(js_get_token)
-    if token_val:
-        return True, token_val
-
+def refresh_session_token(driver, kw_hint="y tế"):
+    driver.execute_script("window.performance.clearResourceTimings();")
     try:
         inputs = driver.find_elements(By.CSS_SELECTOR, "input[type='text'], input[placeholder*='tìm'], input[placeholder*='Tìm'], input[placeholder*='từ khóa']")
         for inp in inputs:
             if inp.is_displayed():
-                inp.clear()
-                inp.send_keys("y tế")
+                inp.click()
+                inp.send_keys(Keys.CONTROL, "a")
+                inp.send_keys(Keys.BACKSPACE)
+                inp.send_keys(kw_hint)
                 inp.send_keys(Keys.RETURN)
-                time.sleep(6)
-                token_val = driver.execute_script(js_get_token)
-                if token_val:
-                    return True, token_val
+                time.sleep(5)
+                new_tok = get_latest_token_from_perf(driver)
+                if new_tok:
+                    return new_tok
                 break
     except Exception:
         pass
 
-    time.sleep(4)
-    token_val = driver.execute_script(js_get_token)
-    return True, token_val
+    driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
+    time.sleep(8)
+    return get_latest_token_from_perf(driver)
 
-# 10. TRÍCH XUẤT THÔNG TIN TBMT THEO KHUNG THỜI GIAN PHÂN TẦNG
+# 10. TRÍCH XUẤT THÔNG TIN TBMT THEO KHUNG THỜI GIAN PHÂN TẦNG (150 - 500 BẢN GHI)
 def fetch_tbmt_today(driver):
     print(f"-> Chế độ chạy: {EVENT_NAME_ENV or 'local'} | Mốc lịch sử gốc: {LAST_RUN_ENV or 'Mặc định 24h'}")
     print(f"-> Mở Session Mua Sắm Công TBMT (Khung quét có đệm: {START_TIME.strftime('%H:%M %d/%m/%Y')} -> {TODAY_STR})...")
+    driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
+    time.sleep(9)
 
-    session_ok, token_val = open_valid_session_and_token(driver)
-    if not session_ok:
-        print("[CẢNH BÁO NGHIÊM TRỌNG] Toàn bộ các đường dẫn Cổng Mua Sắm Công đều trả về 404 (Cổng đang bảo trì hoặc chặn IP).")
-        return []
+    token_val = get_latest_token_from_perf(driver)
+    if not token_val:
+        token_val = refresh_session_token(driver, "y tế")
 
     if token_val:
         print(f"-> Token bảo mật trích xuất từ Session: {token_val[:20]}...")
     else:
-        print("-> [CẢNH BÁO SESSION] Mở trang thành công nhưng chưa bắt được token, thử gọi trực tiếp...")
+        print(f"-> [CẢNH BÁO SESSION] Chưa trích xuất được token (Page Title: '{driver.title}').")
 
     unique_matches = {}
     scanned_codes = set()
-    debug_logged = False
+    api_calls_since_refresh = 0
+
+    from_date_str = START_TIME.strftime("%Y-%m-%dT%H:%M:%S.000")
+    to_date_str = NOW_VN.strftime("%Y-%m-%dT%H:%M:%S.999")
 
     js_fetch_search = """
     var callback = arguments[arguments.length - 1];
@@ -292,6 +277,8 @@ def fetch_tbmt_today(driver):
     var pageNum = arguments[1];
     var pageSize = arguments[2];
     var token = arguments[3];
+    var fromDate = arguments[4];
+    var toDate = arguments[5];
     
     let url = '/o/egp-portal-contractor-selection-v2/services/smart/search';
     if (token) {
@@ -308,7 +295,8 @@ def fetch_tbmt_today(driver):
             matchFields: ["notifyNo", "bidName"],
             filters: [
                 { fieldName: "type", searchType: "in", fieldValues: ["es-notify-contractor"] },
-                { fieldName: "caseKHKQ", searchType: "not_in", fieldValues: ["1"] }
+                { fieldName: "caseKHKQ", searchType: "not_in", fieldValues: ["1"] },
+                { fieldName: "publicDate", searchType: "range", from: fromDate, to: toDate }
             ]
         }]
     }];
@@ -326,18 +314,16 @@ def fetch_tbmt_today(driver):
         try {
             callback({
                 status: response.status,
-                url: url,
                 body: JSON.parse(rawText)
             });
         } catch (e) {
             callback({
                 status: response.status,
-                url: url,
-                rawText: rawText.substring(0, 400)
+                rawText: rawText.substring(0, 300)
             });
         }
     })
-    .catch(err => callback({ error: err.toString(), url: url }));
+    .catch(err => callback({ error: err.toString() }));
     """
 
     query_plan = []
@@ -347,44 +333,68 @@ def fetch_tbmt_today(driver):
         query_plan.append((kw, BROAD_MAX_RECORDS))
 
     for kw, max_records in query_plan:
-        print(f"-> Truy vấn API Smart Search cho: '{kw}' (Tối đa {max_records} bản ghi)...")
+        if api_calls_since_refresh >= 12:
+            new_tok = refresh_session_token(driver, kw)
+            if new_tok:
+                token_val = new_tok
+            api_calls_since_refresh = 0
+
+        print(f"-> Truy vấn API Smart Search cho: '{kw}' (Mục tiêu tối đa {max_records} bản ghi)...")
         matched_in_kw = 0
+        province_in_kw = 0
         fetched_in_kw = 0
+        total_elements = None
         page_num = 0
+        retried_token_for_kw = False
 
         while fetched_in_kw < max_records:
             current_page_size = min(SERVER_MAX_PAGE_SIZE, max_records - fetched_in_kw)
             try:
-                raw_res = driver.execute_async_script(js_fetch_search, kw, page_num, current_page_size, token_val)
+                raw_res = driver.execute_async_script(
+                    js_fetch_search,
+                    kw,
+                    page_num,
+                    current_page_size,
+                    token_val,
+                    from_date_str,
+                    to_date_str
+                )
+                api_calls_since_refresh += 1
+
                 res = raw_res.get("body") if isinstance(raw_res, dict) else raw_res
                 data_list = []
                 
                 if isinstance(res, list) and len(res) > 0:
                     first_item = res[0]
                     if isinstance(first_item, dict):
-                        data_list = first_item.get("page", {}).get("content", [])
+                        page_obj = first_item.get("page", {})
+                        data_list = page_obj.get("content", [])
+                        if total_elements is None:
+                            total_elements = page_obj.get("totalElements")
                 elif isinstance(res, dict):
-                    data_list = res.get("page", {}).get("content", [])
+                    page_obj = res.get("page", {})
+                    data_list = page_obj.get("content", [])
+                    if total_elements is None:
+                        total_elements = page_obj.get("totalElements")
+
+                if (not isinstance(data_list, list) or not data_list) and page_num == 0 and total_elements is None and not retried_token_for_kw:
+                    retried_token_for_kw = True
+                    new_tok = refresh_session_token(driver, kw)
+                    if new_tok and new_tok != token_val:
+                        token_val = new_tok
+                        api_calls_since_refresh = 0
+                        continue
 
                 if not isinstance(data_list, list) or not data_list:
-                    if not debug_logged and page_num == 0:
-                        status_code = raw_res.get("status") if isinstance(raw_res, dict) else "N/A"
-                        req_url = raw_res.get("url") if isinstance(raw_res, dict) else "N/A"
-                        sample_resp = str(raw_res.get("body") or raw_res.get("rawText") or raw_res)[:350]
-                        print(f"    [XÁC NHẬN PAYLOAD & RESPONSE] HTTP={status_code} | URL={req_url}")
-                        print(f"    [RESPONSE THÔ TỪ SERVER]: {sample_resp}")
-                        debug_logged = True
                     break
 
                 fetched_in_kw += len(data_list)
-                older_count = 0
 
                 for item in data_list:
                     if not isinstance(item, dict):
                         continue
 
                     if not is_published_in_time_window(item):
-                        older_count += 1
                         continue
 
                     code = str(item.get("notifyNo") or item.get("notifyNoStand") or item.get("bidNo") or item.get("id") or "")
@@ -394,7 +404,7 @@ def fetch_tbmt_today(driver):
                     scanned_codes.add(code)
 
                     notify_ver = str(item.get("notifyVersion") or "00")
-                    bid_field = str(item.get("bidField") or "HH")
+                    bid_field = str(item.get("bidField") or "HH").strip() or "HH"
 
                     bid_name_raw = item.get("bidName")
                     if isinstance(bid_name_raw, list) and len(bid_name_raw) > 0:
@@ -410,6 +420,13 @@ def fetch_tbmt_today(driver):
 
                     raw_str = json.dumps(item, ensure_ascii=False).lower()
 
+                    # Lọc 14 tỉnh/thành phố trước để chỉ Deep-Scan các gói thầu thuộc địa bàn
+                    matched_province = check_location(item, raw_str)
+                    if not matched_province:
+                        continue
+
+                    province_in_kw += 1
+
                     # DEEP-SCAN bóc tách Biểu mẫu 10B/HSMT
                     if code:
                         hsmt_str = get_hsmt_form_values(driver, code, notify_ver, bid_field)
@@ -418,35 +435,35 @@ def fetch_tbmt_today(driver):
 
                     matched_kws = [k for k in KEYWORDS if k.lower() in raw_str]
                     if matched_kws:
-                        matched_province = check_location(item, raw_str)
-                        if matched_province:
-                            matched_in_kw += 1
-                            location_detail = "Tiêu đề" if any(k.lower() in f"{code} {title}".lower() for k in matched_kws) else "Chi tiết Hàng hóa / Biểu mẫu 10B"
-                            unique_matches[code] = {
-                                "code": code,
-                                "notify_ver": notify_ver,
-                                "title": title,
-                                "amount": formatted_amount,
-                                "investor": investor,
-                                "province": ", ".join(matched_province),
-                                "matched_kw": ", ".join(matched_kws),
-                                "location": location_detail,
-                                "detail_url": detail_url,
-                                "snippet": raw_str[:1200]
-                            }
+                        matched_in_kw += 1
+                        location_detail = "Tiêu đề" if any(k.lower() in f"{code} {title}".lower() for k in matched_kws) else "Chi tiết Hàng hóa / Biểu mẫu 10B"
+                        unique_matches[code] = {
+                            "code": code,
+                            "notify_ver": notify_ver,
+                            "title": title,
+                            "amount": formatted_amount,
+                            "investor": investor,
+                            "province": ", ".join(matched_province),
+                            "matched_kw": ", ".join(matched_kws),
+                            "location": location_detail,
+                            "detail_url": detail_url,
+                            "snippet": raw_str[:1200]
+                        }
 
-                # Dừng phân trang sớm nếu server hết bản ghi hoặc đa số bản ghi đã cũ hơn mốc quét
-                if len(data_list) < current_page_size or older_count > len(data_list) * 0.7:
+                if len(data_list) < current_page_size:
+                    break
+                if isinstance(total_elements, int) and fetched_in_kw >= total_elements:
                     break
 
                 page_num += 1
-                time.sleep(0.4)
+                time.sleep(0.35)
             except Exception as e:
                 print(f"[CẢNH BÁO FETCH TBMT] Từ khóa '{kw}' (Trang {page_num}): {e}")
                 break
 
-        print(f"    + Server trả về {fetched_in_kw} bản ghi -> Khớp khung thời gian, địa phương & từ khóa: {matched_in_kw} gói thầu.")
-        time.sleep(0.5)
+        total_label = f"/{total_elements}" if isinstance(total_elements, int) else ""
+        print(f"    + Đã tải {fetched_in_kw}{total_label} TBMT (thuộc 14 tỉnh: {province_in_kw}) -> Khớp từ khóa y tế: {matched_in_kw} gói thầu.")
+        time.sleep(0.35)
 
     return list(unique_matches.values())
 
