@@ -13,7 +13,9 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from webdriver_manager.chrome import ChromeDriverManager
 
-# 1. CẤU HÌNH BIẾN MÔI TRƯỜNG & DANH SÁCH 19 TỪ KHÓA Y TẾ
+# ==============================================================================
+# 1. CẤU HÌNH BIẾN MÔI TRƯỜNG & DANH SÁCH TỪ KHÓA Y TẾ
+# ==============================================================================
 RAW_GEMINI_KEYS = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_API_KEYS = [k.strip() for k in RAW_GEMINI_KEYS.split(",") if k.strip()]
 current_key_index = 0
@@ -30,6 +32,7 @@ KEYWORDS = [
     "ERCP", "Monitor theo dõi bệnh nhân", "Máy hấp tiệt trùng", "Nhiệt độ thấp", 
     "máy gây mê", "Bơm tiêm điện", "máy truyền dịch", "bàn khám sản", 
     "Monitor sản khoa", "máy hấp ướt", "giường ICU", "giường cấp cứu", 
+    "giường đa năng", "giường bệnh", "thẩm định giá",
     "Bồn oxy lỏng", "Oxy trung tâm"
 ]
 
@@ -37,7 +40,9 @@ BROAD_QUERIES = [
     "thiết bị y tế", "y tế", "bệnh viện", "dụng cụ y tế", "mua sắm", "trang thiết bị"
 ]
 
+# ==============================================================================
 # 2. DANH SÁCH 14 TỈNH / THÀNH PHỐ MỤC TIÊU
+# ==============================================================================
 TARGET_LOCATIONS = [
     "Thành phố Đà Nẵng", "Tỉnh Quảng Ngãi", "Tỉnh Đắc Lắc", "Tỉnh Đắk Lắk", "Tỉnh Gia Lai", 
     "Tỉnh Khánh Hòa", "Tỉnh Lâm Đồng", "Thành phố Hồ Chí Minh", "Thành phố Đồng Nai", 
@@ -64,14 +69,13 @@ BASE_DOMAIN = "muasamcong.mof.gov.vn"
 PRIMARY_MODEL = "gemini-3.8-flash"
 FALLBACK_MODEL = "gemini-3.8-flash-lite"
 
-# Phân tầng giới hạn bản ghi quét (Server trả về tối đa 50 bản ghi/trang):
-# - 19 từ khóa sản phẩm cụ thể: tối đa 150 bản ghi (3 trang x 50)
-# - 6 từ khóa chung mở rộng: tối đa 500 bản ghi (10 trang x 50)
 SERVER_MAX_PAGE_SIZE = 50
 SPECIFIC_MAX_RECORDS = 150
 BROAD_MAX_RECORDS = 500
 
+# ==============================================================================
 # 3. KHỞI TẠO CHROME HEADLESS
+# ==============================================================================
 def init_driver():
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
@@ -85,7 +89,9 @@ def init_driver():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     return driver
 
+# ==============================================================================
 # 4. LỌC THỜI GIAN ĐĂNG TRONG KHOẢNG [START_TIME -> NOW_VN]
+# ==============================================================================
 def is_published_in_time_window(item):
     pub_date_str = item.get("publicDate") or item.get("originalPublicDate") or ""
     if not pub_date_str:
@@ -93,13 +99,14 @@ def is_published_in_time_window(item):
     
     try:
         clean_date_str = pub_date_str.split(".")[0].replace("Z", "")
-        # publicDate từ server Mua sắm công ở múi giờ Việt Nam (UTC+7)
         dt_obj = datetime.strptime(clean_date_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=TZ_VN)
         return START_TIME <= dt_obj <= NOW_VN
     except Exception:
         return True
 
+# ==============================================================================
 # 5. HÀM ĐỊNH DẠNG GIÁ TRỊ GÓI THẦU DẠNG SỐ (VD: 110,440,000.00)
+# ==============================================================================
 def format_currency(val):
     if not val:
         return "0.00"
@@ -114,7 +121,9 @@ def format_currency(val):
     except Exception:
         return str(val)
 
+# ==============================================================================
 # 6. KIỂM TRA & CHUẨN HÓA ĐỊA PHƯƠNG
+# ==============================================================================
 def check_location(item, raw_str):
     found_locs = []
     investor = str(item.get("investorName") or item.get("procuringEntityName") or "").lower()
@@ -142,7 +151,9 @@ def check_location(item, raw_str):
 
     return list(set(found_locs))
 
+# ==============================================================================
 # 7. BÓC TÁCH DEEP-SCAN SÂU BIỂU MẪU 10B / HSMT (API GET-ALL-HSMT)
+# ==============================================================================
 def get_hsmt_form_values(driver, notify_no, notify_version="00", bid_field="HH"):
     clean_bid_field = (bid_field or "").strip() or "HH"
     js_get_hsmt = """
@@ -178,7 +189,9 @@ def get_hsmt_form_values(driver, notify_no, notify_version="00", bid_field="HH")
         pass
     return ""
 
+# ==============================================================================
 # 8. HÀM TẠO URL CHI TIẾT CHUẨN V2
+# ==============================================================================
 def build_detail_url(item, code, notify_ver):
     notify_id = str(item.get("id") or item.get("notifyId") or "")
     plan_no = str(item.get("planNo") or item.get("khlcntNo") or "")
@@ -205,7 +218,9 @@ def build_detail_url(item, code, notify_ver):
     url += "&processApply=LDT&bidMode=1_MTHS&isInternet=1"
     return url
 
+# ==============================================================================
 # 9. TRÍCH XUẤT & LÀM MỚI RECAPTCHA TOKEN TỪ SESSION TRÌNH DUYỆT
+# ==============================================================================
 def get_latest_token_from_perf(driver):
     js_get_token = """
     let token = '';
@@ -248,7 +263,9 @@ def refresh_session_token(driver, kw_hint="y tế"):
     time.sleep(8)
     return get_latest_token_from_perf(driver)
 
-# 10. TRÍCH XUẤT THÔNG TIN TBMT THEO KHUNG THỜI GIAN PHÂN TẦNG (150 - 500 BẢN GHI)
+# ==============================================================================
+# 10. TRÍCH XUẤT THÔNG TIN TBMT THEO KHUNG THỜI GIAN PHÂN TẦNG (150 - 500)
+# ==============================================================================
 def fetch_tbmt_today(driver):
     print(f"-> Chế độ chạy: {EVENT_NAME_ENV or 'local'} | Mốc lịch sử gốc: {LAST_RUN_ENV or 'Mặc định 24h'}")
     print(f"-> Mở Session Mua Sắm Công TBMT (Khung quét có đệm: {START_TIME.strftime('%H:%M %d/%m/%Y')} -> {TODAY_STR})...")
@@ -420,14 +437,12 @@ def fetch_tbmt_today(driver):
 
                     raw_str = json.dumps(item, ensure_ascii=False).lower()
 
-                    # Lọc 14 tỉnh/thành phố trước để chỉ Deep-Scan các gói thầu thuộc địa bàn
                     matched_province = check_location(item, raw_str)
                     if not matched_province:
                         continue
 
                     province_in_kw += 1
 
-                    # DEEP-SCAN bóc tách Biểu mẫu 10B/HSMT
                     if code:
                         hsmt_str = get_hsmt_form_values(driver, code, notify_ver, bid_field)
                         if hsmt_str:
@@ -467,7 +482,9 @@ def fetch_tbmt_today(driver):
 
     return list(unique_matches.values())
 
-# 11. PHÂN TÍCH VỚI GEMINI AI (TỰ ĐỔI API KEY HOẶC CHUYỂN MODEL DỰ PHÒNG NẾU QUÁ TẢI)
+# ==============================================================================
+# 11. PHÂN TÍCH VỚI GEMINI AI (PHÂN LOẠI GIAI ĐOẠN & NHÓM BU)
+# ==============================================================================
 def analyze_with_gemini(candidates):
     global current_key_index, GEMINI_API_KEYS
     if not candidates or not GEMINI_API_KEYS:
@@ -480,16 +497,17 @@ def analyze_with_gemini(candidates):
 
     prompt = f"""
 Bạn là chuyên gia phân tích dữ liệu đấu thầu Y tế.
-Dưới đây là danh sách các Thông báo mời thầu (TBMT) phát hành từ {START_TIME.strftime('%H:%M %d/%m/%Y')} đến {TODAY_STR} đã lọc theo địa phương và 19 từ khóa y tế.
+Dưới đây là danh sách các Thông báo mời thầu (TBMT) phát hành từ {START_TIME.strftime('%H:%M %d/%m/%Y')} đến {TODAY_STR} đã lọc theo địa phương và từ khóa y tế.
 
 Yêu cầu:
-1. Giữ nguyên toàn bộ các gói thầu trong danh sách đầu vào.
-2. Viết 1 câu tóm tắt ngắn gọn lý do phù hợp hoặc mặt hàng chính trong gói thầu.
-3. Trả về đúng mảng JSON chứa các object đầy đủ thuộc tính và thêm "reason".
+1. Giữ nguyên toàn bộ các gói thầu trong danh sách đầu vào và mọi thuộc tính gốc.
+2. Viết 1 câu tóm tắt ngắn gọn lý do phù hợp hoặc mặt hàng chính trong gói thầu vào trường "reason".
+3. Thêm trường "stage": ghi "TBMT (Mời thầu chính thức)".
+4. Thêm trường "bu_group": phân loại vào 1 trong các nhóm [Nội soi - Tiêu hóa, Phòng mổ - Gây mê, Hồi sức - Giường bệnh, Tiệt trùng, Khí y tế, Vật tư & Khác].
+5. Trả về đúng mảng JSON thuần túy (không kèm markdown).
 
 Danh sách:
 {json.dumps(candidates, ensure_ascii=False, indent=2)}
-Chỉ trả về chuỗi JSON thuần túy (không kèm markdown).
 """
 
     for model_name in models_to_try:
@@ -535,7 +553,9 @@ Chỉ trả về chuỗi JSON thuần túy (không kèm markdown).
 
     return candidates
 
+# ==============================================================================
 # 12. GỬI EMAIL BÁO CÁO
+# ==============================================================================
 def send_email_report(matched_list):
     if not RECEIVER_EMAIL:
         print("[LỖI CẤU HÌNH] Chưa khai báo email nhận.")
@@ -552,7 +572,7 @@ def send_email_report(matched_list):
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT)</h3>
-            <p>Hệ thống đã quét dữ liệu từ <b>{START_TIME.strftime('%H:%M %d/%m/%Y')}</b> đến <b>{TODAY_STR}</b> nhưng chưa phát hiện gói thầu mới khớp 19 từ khóa y tế tại 14 địa phương theo dõi.</p>
+            <p>Hệ thống đã quét dữ liệu từ <b>{START_TIME.strftime('%H:%M %d/%m/%Y')}</b> đến <b>{TODAY_STR}</b> nhưng chưa phát hiện gói thầu mới khớp từ khóa y tế tại 14 địa phương theo dõi.</p>
         </div>
         """
     else:
@@ -626,6 +646,8 @@ def main():
     try:
         matched_list = fetch_tbmt_today(driver)
         final_matches = analyze_with_gemini(matched_list)
+        with open("latest_results.json", "w", encoding="utf-8") as f:
+            json.dump(final_matches, f, ensure_ascii=False, indent=2)
         send_email_report(final_matches)
     finally:
         driver.quit()
