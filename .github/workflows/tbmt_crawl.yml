@@ -2,9 +2,9 @@ name: Auto Crawl TBMT Hang Ngay
 
 on:
   schedule:
-    # Chạy tự động lúc 08:00 sáng và 16:30 chiều giờ Việt Nam (01:00 và 09:30 UTC)
-    - cron: '0 1 * * *'
-    - cron: '30 9 * * *'
+    # Chạy tự động lúc 06:30 sáng và 21:00 tối giờ Việt Nam (23:30 và 14:00 UTC)
+    - cron: '30 23 * * *'
+    - cron: '0 14 * * *'
   workflow_dispatch:
 
 permissions:
