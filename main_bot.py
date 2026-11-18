@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import json
 import smtplib
@@ -14,7 +15,7 @@ from selenium.webdriver.common.keys import Keys
 from webdriver_manager.chrome import ChromeDriverManager
 
 # ==============================================================================
-# 1. CẤU HÌNH BIẾN MÔI TRƯỜNG & DANH SÁCH TỪ KHÓA Y TẾ
+# 1. CẤU HÌNH BIẾN MÔI TRƯỜNG & BỘ TỪ KHÓA LỌC CHÍNH XÁC TBYT / PACS
 # ==============================================================================
 RAW_GEMINI_KEYS = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_API_KEYS = [k.strip() for k in RAW_GEMINI_KEYS.split(",") if k.strip()]
@@ -27,34 +28,97 @@ RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", "").strip() or SENDER_EMAIL
 LAST_RUN_ENV = os.environ.get("LAST_RUN_TIMESTAMP", "").strip()
 EVENT_NAME_ENV = os.environ.get("GITHUB_EVENT_NAME", "").strip()
 
-KEYWORDS = [
-    "nội soi", "Bàn mổ", "đèn mổ", "hệ thống khí y tế", "vận chuyển mẫu", 
-    "ERCP", "Monitor theo dõi bệnh nhân", "Máy hấp tiệt trùng", "Nhiệt độ thấp", 
-    "máy gây mê", "Bơm tiêm điện", "máy truyền dịch", "bàn khám sản", 
-    "Monitor sản khoa", "máy hấp ướt", "giường ICU", "giường cấp cứu", 
-    "giường đa năng", "giường bệnh", "Bồn oxy lỏng", "Oxy trung tâm", "máy chạy thận", "HDF Online", "Ống soi"
+# Nhóm 1: Từ khóa thiết bị y tế & giải pháp PACS đặc thù (khớp trực tiếp)
+SPECIFIC_DEVICE_KEYWORDS = [
+    # Nội soi - Phẫu thuật - Laser
+    "nội soi", "ống soi", "optic nội soi", "ercp", "robot phẫu thuật",
+    "tán sỏi laser", "máy tán sỏi",
+    # Phòng mổ - Gây mê - Hồi sức - Giường
+    "bàn mổ", "đèn mổ", "máy gây mê", "monitor theo dõi bệnh nhân",
+    "máy theo dõi bệnh nhân", "bơm tiêm điện", "máy truyền dịch",
+    "giường icu", "giường cấp cứu", "giường đa năng", "giường bệnh",
+    "hồi sức cấp cứu", "hồi sức sơ sinh", "máy thở", "máy phá rung tim",
+    # Khí y tế - Vận chuyển - Tiệt trùng
+    "hệ thống khí y tế", "bồn oxy lỏng", "oxy trung tâm", "vận chuyển mẫu",
+    "máy hấp tiệt trùng", "nhiệt độ thấp", "máy hấp ướt",
+    # Sản khoa - Chẩn đoán hình ảnh - PACS - Chuyên khoa
+    "bàn khám sản", "monitor sản khoa", "c-arm", "c arm", "x-quang",
+    "máy siêu âm", "siêu âm màu", "siêu âm chẩn đoán", "thận nhân tạo",
+    "máy chạy thận", "hdf online",
+    "pacs", "ris/pacs", "ris - pacs", "lưu trữ và truyền tải hình ảnh",
+    # Gói mua sắm / sửa chữa thiết bị y tế tổng thể
+    "thiết bị y tế chuyên môn", "thiết bị y tế chuyên dùng",
+    "thiết bị y tế cấp thiết", "mua sắm thiết bị chuyên môn",
+    "mua sắm thiết bị y tế", "mua thiết bị y tế",
+    "cung cấp, lắp đặt thiết bị y tế", "cung cấp lắp đặt thiết bị y tế",
+    "trang thiết bị y tế", "sửa chữa thiết bị y tế", "sửa chữa máy"
+]
+
+# Từ khóa loại trừ các dự án ngoài ngành y tế, dịch vụ thuê/khám sức khỏe, duy tu nhỏ
+EXCLUDE_NON_MEDICAL_PATTERNS = [
+    "thẩm định giá đất", "thi hành bản án", "tuần tra, kiểm tra rừng",
+    "dây chuyền kiểm định phương tiện", "cầu đi bộ", "tái định cư",
+    "công viên", "nhà văn hóa", "trường tiểu học", "trường thcs", "trường thpt",
+    "cao đẳng kỹ thuật", "trụ sở văn phòng", "hệ thống chiếu sáng",
+    "mở rộng, nâng cấp tuyến đường", "kiểm định máy x-quang",
+    "kiểm xạ an toàn", "liều kế cá nhân", "khám sức khỏe",
+    "dịch vụ chụp x-quang", "xe lưu động", "ốp gạch", "sơn tường",
+    "chống thấm", "lợp mái", "vệ sinh công nghiệp", "giặt là", "cây xanh"
+]
+
+# Cụm từ nhận diện gói VẬT TƯ TIÊU HAO thuần túy (không phải thiết bị y tế)
+CONSUMABLE_MEDICAL_TERMS = [
+    "phim x-quang", "phim chụp", "bơm, kim tiêm", "bơm kim tiêm",
+    "dây truyền", "găng tay", "bông, dung dịch", "băng, gạc",
+    "vật tư tiêu hao", "hóa chất xét nghiệm", "sinh phẩm",
+    "vật tư y tế sử dụng trong"
+]
+
+# Cụm từ nhận diện gói THUÊ PACS / THUÊ THIẾT BỊ / THUÊ PHẦN MỀM (loại trừ tuyệt đối)
+RENTAL_TERMS = [
+    "thuê dịch vụ sử dụng phần mềm", "thuê dịch vụ phần mềm",
+    "thuê dịch vụ hệ thống", "thuê hệ thống ris", "thuê hệ thống pacs",
+    "thuê hệ thống phần mềm", "thuê phần mềm", "thuê pacs", "thuê ris/pacs",
+    "dịch vụ hệ thống thông tin", "ca chụp/tháng",
+    "thuê máy", "cho thuê máy", "thuê thiết bị", "cho thuê thiết bị",
+    "sl: 12 tháng", "sl: 24 tháng", "sl: 36 tháng", "sl: 6 tháng"
 ]
 
 BROAD_QUERIES = [
-    "thiết bị y tế", "y tế", "bệnh viện", "dụng cụ y tế", "mua sắm", "trang thiết bị"
+    "thiết bị y tế", "trang thiết bị y tế", "bệnh viện",
+    "trung tâm y tế", "ngành y tế", "mua sắm"
 ]
 
 # ==============================================================================
-# 2. DANH SÁCH 14 TỈNH / THÀNH PHỐ MỤC TIÊU
+# 2. DANH SÁCH 14 TỈNH / THÀNH PHỐ MỤC TIÊU PHỤ TRÁCH
 # ==============================================================================
-TARGET_LOCATIONS = [
-    "Thành phố Đà Nẵng", "Tỉnh Quảng Ngãi", "Tỉnh Đắc Lắc", "Tỉnh Đắk Lắk", "Tỉnh Gia Lai", 
-    "Tỉnh Khánh Hòa", "Tỉnh Lâm Đồng", "Thành phố Hồ Chí Minh", "Thành phố Đồng Nai", 
-    "Tỉnh Tây Ninh", "Tỉnh Đồng Tháp", "Tỉnh Vĩnh Long", "Tỉnh An Giang", 
-    "Thành phố Cần Thơ", "Tỉnh Cà Mau"
-]
+LOCATION_ALIASES = {
+    "Thành phố Đà Nẵng": ["đà nẵng", "quảng nam", "tam kỳ", "hội an", "việt - hàn đà nẵng"],
+    "Tỉnh Quảng Ngãi": ["quảng ngãi", "kon tum"],
+    "Tỉnh Đắk Lắk": ["đắk lắk", "đắc lắc", "tây nguyên", "buôn ma thuột", "phú yên", "tuy hòa"],
+    "Tỉnh Gia Lai": ["gia lai", "pleiku", "bình định", "quy nhơn"],
+    "Tỉnh Khánh Hòa": ["khánh hòa", "nha trang", "ninh thuận", "phan rang"],
+    "Tỉnh Lâm Đồng": ["lâm đồng", "đà lạt", "bảo lộc", "đắk nông", "bình thuận", "phan thiết"],
+    "Thành phố Hồ Chí Minh": [
+        "hồ chí minh", "tp.hcm", "tphcm", "tp hcm", "sài gòn", "thủ đức",
+        "bình dương", "bà rịa", "vũng tàu", "phú mỹ", "nhi đồng", "bình dân",
+        "viện tim", "nhân ái", "đại học y dược", "ung bướu", "gò vấp",
+        "bệnh nhiệt đới", "phạm ngọc thạch", "chấn thương", "lê văn thịnh",
+        "thuận an", "tân uyên"
+    ],
+    "Thành phố Đồng Nai": ["đồng nai", "biên hòa", "long khánh", "bình phước", "đồng xoài", "long thành"],
+    "Tỉnh Tây Ninh": ["tây ninh", "long an", "tân an", "thủ thừa", "tân hưng"],
+    "Tỉnh Đồng Tháp": ["đồng tháp", "cao lãnh", "sa đéc", "tiền giang", "mỹ tho", "quân y 120"],
+    "Tỉnh Vĩnh Long": ["vĩnh long", "bến tre", "trà vinh", "nguyễn đình chiểu"],
+    "Tỉnh An Giang": ["an giang", "long xuyên", "châu đốc", "kiên giang", "rạch giá", "phú quốc", "ung bướu kiên giang"],
+    "Thành phố Cần Thơ": ["cần thơ", "hậu giang", "sóc trăng", "thốt nốt"],
+    "Tỉnh Cà Mau": ["cà mau", "bạc liêu"]
+}
 
 TZ_VN = timezone(timedelta(hours=7))
 NOW_VN = datetime.now(TZ_VN)
 TODAY_STR = NOW_VN.strftime("%H:%M %d/%m/%Y")
 
-# Tính toán mốc START_TIME dựa trên lần chạy tự động (schedule) thành công gần nhất
-# Lùi thêm 15 phút đệm an toàn để bù trừ độ trễ khởi động runner của GitHub Actions
 if LAST_RUN_ENV:
     try:
         parsed_last_run = datetime.fromisoformat(LAST_RUN_ENV.replace("Z", "+00:00")).astimezone(TZ_VN)
@@ -66,14 +130,14 @@ else:
 
 BASE_DOMAIN = "muasamcong.mof.gov.vn"
 PRIMARY_MODEL = "gemini-3.8-flash"
-FALLBACK_MODEL = "gemini-3.8-flash-lite"
+FALLBACK_MODEL = "gemini-3.5-flash-lite"
 
 SERVER_MAX_PAGE_SIZE = 50
 SPECIFIC_MAX_RECORDS = 150
 BROAD_MAX_RECORDS = 500
 
 # ==============================================================================
-# 3. KHỞI TẠO CHROME HEADLESS
+# 3. KHỞI TẠO CHROME HEADLESS & ĐỌC LỊCH SỬ CHỐNG TRÙNG TỪ GOOGLE SHEET
 # ==============================================================================
 def init_driver():
     chrome_options = Options()
@@ -83,19 +147,46 @@ def init_driver():
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-    
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-    return driver
+    chrome_options.add_argument(
+        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    )
+    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+
+def get_existing_keys_from_gsheet():
+    gsheet_id = os.environ.get("GSHEET_ID", "").strip()
+    sa_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON", "").strip()
+    if not gsheet_id or not sa_json:
+        return set()
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+
+        creds_dict = json.loads(sa_json)
+        scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(gsheet_id)
+
+        existing_keys = set()
+        for ws in sh.worksheets():
+            all_vals = ws.get_all_values()
+            for row in all_vals[1:]:
+                if row and str(row[0]).strip():
+                    existing_keys.add(str(row[0]).strip())
+        print(f"-> Đã tải {len(existing_keys)} khóa lịch sử từ Google Sheet để chống trùng.")
+        return existing_keys
+    except Exception as e:
+        print(f"[CẢNH BÁO ĐỌC LỊCH SỬ GSHEET] {e}")
+        return set()
 
 # ==============================================================================
-# 4. LỌC THỜI GIAN ĐĂNG TRONG KHOẢNG [START_TIME -> NOW_VN]
+# 4. LỌC THỜI GIAN ĐĂNG & ĐỊNH DẠNG GIÁ TRỊ GÓI THẦU
 # ==============================================================================
 def is_published_in_time_window(item):
     pub_date_str = item.get("publicDate") or item.get("originalPublicDate") or ""
     if not pub_date_str:
         return True
-    
     try:
         clean_date_str = pub_date_str.split(".")[0].replace("Z", "")
         dt_obj = datetime.strptime(clean_date_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=TZ_VN)
@@ -103,16 +194,12 @@ def is_published_in_time_window(item):
     except Exception:
         return True
 
-# ==============================================================================
-# 5. HÀM ĐỊNH DẠNG GIÁ TRỊ GÓI THẦU DẠNG SỐ (VD: 110,440,000.00)
-# ==============================================================================
 def format_currency(val):
     if not val:
         return "0.00"
     try:
         if isinstance(val, list) and len(val) > 0:
             val = val[0]
-            
         num = float(val)
         if num == 0:
             return "0.00"
@@ -121,13 +208,13 @@ def format_currency(val):
         return str(val)
 
 # ==============================================================================
-# 6. KIỂM TRA & CHUẨN HÓA ĐỊA PHƯƠNG
+# 5. KIỂM TRA & CHUẨN HÓA ĐỊA PHƯƠNG TRONG 14 TỈNH / THÀNH PHỐ MỤC TIÊU
 # ==============================================================================
 def check_location(item, raw_str):
     found_locs = []
     investor = str(item.get("investorName") or item.get("procuringEntityName") or "").lower()
-    title = str(item.get("bidName") or "").lower()
-    search_text = f"{investor} {title} {raw_str}"
+    title = str(item.get("bidName") or item.get("name") or "").lower()
+    search_text = f"{investor} {title} {raw_str}".lower()
 
     locations_arr = item.get("locations", [])
     if isinstance(locations_arr, list):
@@ -137,21 +224,14 @@ def check_location(item, raw_str):
                 dist_name = loc.get("districtName", "")
                 search_text += f" {prov_name} {dist_name}".lower()
 
-    if "đắk lắk" in search_text or "đắc lắc" in search_text or "tây nguyên" in search_text or "buôn ma thuột" in search_text:
-        found_locs.append("Tỉnh Đắk Lắk")
-
-    for target in TARGET_LOCATIONS:
-        clean_kw = target.replace("Thành phố ", "").replace("Tỉnh ", "").lower()
-        if clean_kw in search_text:
-            if clean_kw == "đồng nai":
-                found_locs.append("Thành phố Đồng Nai")
-            elif clean_kw not in ["đắk lắk", "đắc lắc"]:
-                found_locs.append(target)
+    for canonical_name, aliases in LOCATION_ALIASES.items():
+        if any(alias in search_text for alias in aliases):
+            found_locs.append(canonical_name)
 
     return list(set(found_locs))
 
 # ==============================================================================
-# 7. BÓC TÁCH DEEP-SCAN SÂU BIỂU MẪU 10B / HSMT (API GET-ALL-HSMT)
+# 6. BÓC TÁCH DEEP-SCAN SÂU BIỂU MẪU 10B / HSMT (API GET-ALL-HSMT)
 # ==============================================================================
 def get_hsmt_form_values(driver, notify_no, notify_version="00", bid_field="HH"):
     clean_bid_field = (bid_field or "").strip() or "HH"
@@ -189,7 +269,7 @@ def get_hsmt_form_values(driver, notify_no, notify_version="00", bid_field="HH")
     return ""
 
 # ==============================================================================
-# 8. HÀM TẠO URL CHI TIẾT CHUẨN V2
+# 7. HÀM TẠO URL CHI TIẾT CHUẨN V2
 # ==============================================================================
 def build_detail_url(item, code, notify_ver):
     notify_id = str(item.get("id") or item.get("notifyId") or "")
@@ -218,7 +298,7 @@ def build_detail_url(item, code, notify_ver):
     return url
 
 # ==============================================================================
-# 9. TRÍCH XUẤT & LÀM MỚI RECAPTCHA TOKEN TỪ SESSION TRÌNH DUYỆT
+# 8. TRÍCH XUẤT & LÀM MỚI RECAPTCHA TOKEN TỪ SESSION TRÌNH DUYỆT
 # ==============================================================================
 def get_latest_token_from_perf(driver):
     js_get_token = """
@@ -237,7 +317,6 @@ def get_latest_token_from_perf(driver):
     return token;
     """
     return driver.execute_script(js_get_token) or ""
-
 
 def refresh_session_token(driver, kw_hint="y tế"):
     driver.execute_script("window.performance.clearResourceTimings();")
@@ -263,6 +342,59 @@ def refresh_session_token(driver, kw_hint="y tế"):
     return get_latest_token_from_perf(driver)
 
 # ==============================================================================
+# 9. BỘ LỌC 2 LỚP: LOẠI BỎ VẬT TƯ TIÊU HAO, THUÊ MÁY/PACS, SỬA CHỮA NHỎ
+# ==============================================================================
+def is_consumable_text(text_lower):
+    return any(c in text_lower for c in CONSUMABLE_MEDICAL_TERMS)
+
+def is_rental_text(text_lower):
+    if any(r in text_lower for r in RENTAL_TERMS):
+        return True
+    if re.search(r"\bthuê\s+\d*\s*(máy|thiết bị|hệ thống)", text_lower):
+        return True
+    return False
+
+def evaluate_tbmt_medical_relevance(title, investor, hsmt_str, raw_str):
+    title_lower = title.lower()
+    investor_lower = investor.lower()
+    core_text = f"{title_lower} {investor_lower} {hsmt_str}"
+
+    # 1. Chốt chặn loại trừ các dự án ngoài ngành y tế, khám sức khỏe, duy tu/ốp gạch/sơn sửa nhỏ
+    if any(excl in core_text for excl in EXCLUDE_NON_MEDICAL_PATTERNS):
+        return False, []
+
+    if any(infra in title_lower for infra in ["cầu đi bộ", "tuyến đường", "khu tái định cư", "hệ thống chiếu sáng", "trụ sở", "nhà văn hóa", "công viên"]):
+        return False, []
+
+    # 2. Loại trừ TUYỆT ĐỐI các gói THUÊ máy / THUÊ thiết bị / THUÊ PACS / THUÊ phần mềm
+    if is_rental_text(f"{title_lower} {hsmt_str}"):
+        return False, []
+
+    # 3. Loại trừ gói thuần vật tư tiêu hao nếu tiêu đề rõ ràng là vật tư tiêu hao
+    if is_consumable_text(title_lower) and not any(
+        dev in title_lower for dev in ["máy ", "hệ thống ", "bàn mổ", "đèn mổ", "nội soi", "giường ", "monitor"]
+    ):
+        return False, []
+
+    # 4. Nếu chỉ là phần mềm bệnh án điện tử / HIS đơn thuần mà không có mua PACS hoặc TBYT thì bỏ qua
+    if ("bệnh án điện tử" in title_lower or "phần mềm quản lý bệnh viện" in title_lower) and not any(
+        p in f"{title_lower} {hsmt_str}" for p in ["pacs", "ris/pacs", "ris - pacs", "lưu trữ và truyền tải hình ảnh", "thiết bị y tế"]
+    ):
+        return False, []
+
+    # 5. Khớp từ khóa thiết bị y tế & mua đứt PACS đặc thù
+    search_scope = f"{title_lower} {hsmt_str}" if hsmt_str.strip() else raw_str
+    matched_kws = [k for k in SPECIFIC_DEVICE_KEYWORDS if k in search_scope]
+
+    # Loại bỏ khớp nhầm "x-quang" nếu chỉ là "phim x-quang"
+    if "x-quang" in matched_kws and "phim x-quang" in search_scope and not any(
+        dev in search_scope for dev in ["máy x-quang", "hệ thống x-quang", "x-quang kỹ thuật số", "x-quang di động", "x-quang cao tần", "c-arm"]
+    ):
+        matched_kws = [k for k in matched_kws if k != "x-quang"]
+
+    return bool(matched_kws), list(dict.fromkeys(matched_kws))
+
+# ==============================================================================
 # 10. TRÍCH XUẤT THÔNG TIN TBMT THEO KHUNG THỜI GIAN PHÂN TẦNG (150 - 500)
 # ==============================================================================
 def fetch_tbmt_today(driver):
@@ -281,7 +413,7 @@ def fetch_tbmt_today(driver):
         print(f"-> [CẢNH BÁO SESSION] Chưa trích xuất được token (Page Title: '{driver.title}').")
 
     unique_matches = {}
-    scanned_codes = set()
+    scanned_keys = set()
     api_calls_since_refresh = 0
 
     from_date_str = START_TIME.strftime("%Y-%m-%dT%H:%M:%S.000")
@@ -343,7 +475,7 @@ def fetch_tbmt_today(driver):
     """
 
     query_plan = []
-    for kw in KEYWORDS:
+    for kw in SPECIFIC_DEVICE_KEYWORDS:
         query_plan.append((kw, SPECIFIC_MAX_RECORDS))
     for kw in BROAD_QUERIES:
         query_plan.append((kw, BROAD_MAX_RECORDS))
@@ -355,7 +487,7 @@ def fetch_tbmt_today(driver):
                 token_val = new_tok
             api_calls_since_refresh = 0
 
-        print(f"-> Truy vấn API Smart Search cho: '{kw}' (Mục tiêu tối đa {max_records} bản ghi)...")
+        print(f"-> Truy vấn API Smart Search TBMT cho: '{kw}' (Mục tiêu tối đa {max_records} bản ghi)...")
         matched_in_kw = 0
         province_in_kw = 0
         fetched_in_kw = 0
@@ -413,22 +545,24 @@ def fetch_tbmt_today(driver):
                     if not is_published_in_time_window(item):
                         continue
 
-                    code = str(item.get("notifyNo") or item.get("notifyNoStand") or item.get("bidNo") or item.get("id") or "")
-                    if not code or code in unique_matches or code in scanned_codes:
+                    code = str(item.get("notifyNo") or item.get("notifyNoStand") or item.get("bidNo") or item.get("id") or "").strip()
+                    notify_ver = str(item.get("notifyVersion") or "00").strip()
+                    u_key = f"{code}-{notify_ver}"
+
+                    if not code or u_key in unique_matches or u_key in scanned_keys:
                         continue
 
-                    scanned_codes.add(code)
+                    scanned_keys.add(u_key)
 
-                    notify_ver = str(item.get("notifyVersion") or "00")
                     bid_field = str(item.get("bidField") or "HH").strip() or "HH"
 
                     bid_name_raw = item.get("bidName")
                     if isinstance(bid_name_raw, list) and len(bid_name_raw) > 0:
-                        title = str(bid_name_raw[0])
+                        title = str(bid_name_raw[0]).replace("\n", " ").strip()
                     else:
-                        title = str(bid_name_raw or item.get("name") or "")
+                        title = str(bid_name_raw or item.get("name") or "").replace("\n", " ").strip()
                         
-                    investor = str(item.get("investorName") or item.get("procuringEntityName") or "")
+                    investor = str(item.get("investorName") or item.get("procuringEntityName") or "").strip()
                     
                     est_amount_raw = item.get("estAmount") or item.get("investTotal") or item.get("bidPrice")
                     formatted_amount = format_currency(est_amount_raw)
@@ -442,18 +576,27 @@ def fetch_tbmt_today(driver):
 
                     province_in_kw += 1
 
+                    hsmt_str = ""
                     if code:
                         hsmt_str = get_hsmt_form_values(driver, code, notify_ver, bid_field)
                         if hsmt_str:
                             raw_str += " " + hsmt_str
 
-                    matched_kws = [k for k in KEYWORDS if k.lower() in raw_str]
-                    if matched_kws:
+                    is_relevant, matched_kws = evaluate_tbmt_medical_relevance(
+                        title, investor, hsmt_str, raw_str
+                    )
+
+                    if is_relevant:
                         matched_in_kw += 1
-                        location_detail = "Tiêu đề" if any(k.lower() in f"{code} {title}".lower() for k in matched_kws) else "Chi tiết Hàng hóa / Biểu mẫu 10B"
-                        unique_matches[code] = {
+                        location_detail = (
+                            "Tiêu đề"
+                            if any(k.lower() in f"{code} {title}".lower() for k in matched_kws)
+                            else "Chi tiết Hàng hóa / Biểu mẫu 10B"
+                        )
+                        unique_matches[u_key] = {
                             "code": code,
                             "notify_ver": notify_ver,
+                            "stage": "TBMT (Mời thầu chính thức)",
                             "title": title,
                             "amount": formatted_amount,
                             "investor": investor,
@@ -461,7 +604,7 @@ def fetch_tbmt_today(driver):
                             "matched_kw": ", ".join(matched_kws),
                             "location": location_detail,
                             "detail_url": detail_url,
-                            "snippet": raw_str[:1200]
+                            "snippet": (hsmt_str[:1500] if hsmt_str else raw_str[:1500])
                         }
 
                 if len(data_list) < current_page_size:
@@ -476,38 +619,49 @@ def fetch_tbmt_today(driver):
                 break
 
         total_label = f"/{total_elements}" if isinstance(total_elements, int) else ""
-        print(f"    + Đã tải {fetched_in_kw}{total_label} TBMT (thuộc 14 tỉnh: {province_in_kw}) -> Khớp từ khóa y tế: {matched_in_kw} gói thầu.")
+        print(f"    + Đã tải {fetched_in_kw}{total_label} TBMT (thuộc 14 tỉnh: {province_in_kw}) -> Khớp TBYT / Mua PACS: {matched_in_kw} gói thầu.")
         time.sleep(0.35)
 
+    print(f"=== TỔNG KẾT QUÉT TBMT 14 TỈNH/TP: {len(unique_matches)} GÓI SẠCH KHỚP TIÊU CHÍ ===")
     return list(unique_matches.values())
 
 # ==============================================================================
-# 11. PHÂN TÍCH VỚI GEMINI AI (PHÂN LOẠI GIAI ĐOẠN & NHÓM BU)
+# 11. PHÂN TÍCH VỚI GEMINI AI (HẬU KIỂM LOẠI BỎ GÓI RÁC + PHÂN LOẠI NHÓM BU)
 # ==============================================================================
-def analyze_with_gemini(candidates):
+def analyze_batch_with_gemini(batch_items):
     global current_key_index, GEMINI_API_KEYS
-    if not candidates or not GEMINI_API_KEYS:
-        return candidates
-
     from google import genai
     from google.genai import types
 
-    models_to_try = [PRIMARY_MODEL, FALLBACK_MODEL, "gemini-3.8-pro"]
+    models_to_try = [
+        PRIMARY_MODEL,
+        FALLBACK_MODEL,
+        "gemini-3.1-pro-preview"
+    ]
 
     prompt = f"""
-Bạn là chuyên gia phân tích dữ liệu đấu thầu Y tế.
-Dưới đây là danh sách các Thông báo mời thầu (TBMT) phát hành từ {START_TIME.strftime('%H:%M %d/%m/%Y')} đến {TODAY_STR} đã lọc theo địa phương và từ khóa y tế.
+Bạn là chuyên gia thẩm định dữ liệu Thông báo mời thầu (TBMT) Trang thiết bị Y tế và Hệ thống PACS (chỉ mua đứt/đầu tư, KHÔNG lấy gói thuê).
+Dưới đây là danh sách các TBMT phát hành từ {START_TIME.strftime('%H:%M %d/%m/%Y')} đến {TODAY_STR} tại 14 tỉnh/thành phố phụ trách.
 
-Yêu cầu:
+Yêu cầu BẮT BUỘC:
 1. Giữ nguyên toàn bộ các gói thầu trong danh sách đầu vào và mọi thuộc tính gốc.
-2. Viết 1 câu tóm tắt ngắn gọn lý do phù hợp hoặc mặt hàng chính trong gói thầu vào trường "reason".
-3. Thêm trường "stage": ghi "TBMT (Mời thầu chính thức)".
-4. Thêm trường "bu_group": phân loại vào 1 trong các nhóm [Nội soi - Tiêu hóa, Phòng mổ - Gây mê, Hồi sức - Giường bệnh, Tiệt trùng, Khí y tế, Vật tư & Khác].
-5. Trả về đúng mảng JSON thuần túy (không kèm markdown).
+2. Thêm trường boolean "is_medical_relevant":
+   - Đặt true NẾU TBMT này liên quan đến mua sắm/sửa chữa Trang thiết bị y tế hoặc MUA SẮM/ĐẦU TƯ hệ thống PACS (RIS/PACS).
+   - Đặt false nếu thuộc một trong các trường hợp sau:
+     + Gói thầu ngoài ngành y tế (trường học, giao thông, công viên, UBND xã, công an, điện lực).
+     + Gói THUÊ thiết bị y tế, THUÊ hệ thống RIS/PACS, dịch vụ chụp X-quang lưu động phục vụ khám sức khỏe.
+     + Gói mua sắm thuần vật tư y tế tiêu hao (bơm kim tiêm, găng tay, bông băng gạc, phim X-quang, hóa chất xét nghiệm, sinh phẩm).
+     + Gói sửa chữa nhỏ/duy tu cơ sở hạ tầng bệnh viện (ốp gạch, sơn tường, chống thấm, lợp mái).
+3. Viết 1–2 câu tóm tắt rõ ràng mặt hàng thiết bị / hệ thống PACS chính trong gói thầu (kèm số lượng nếu có trong "snippet") vào trường "reason".
+4. Giữ nguyên trường "stage": "TBMT (Mời thầu chính thức)".
+5. Thêm trường "bu_group": phân loại vào 1 trong các nhóm [Nội soi - Tiêu hóa, Phòng mổ - Gây mê, Hồi sức - Giường bệnh, Tiệt trùng, Khí y tế, Chẩn đoán hình ảnh, Đa chuyên khoa / TBYT tổng hợp].
+6. Trả về đúng mảng JSON thuần túy (không kèm markdown).
 
 Danh sách:
-{json.dumps(candidates, ensure_ascii=False, indent=2)}
+{json.dumps(batch_items, ensure_ascii=False, indent=2)}
 """
+
+    retry_delays = [8, 15, 25]
 
     for model_name in models_to_try:
         key_idx = current_key_index
@@ -515,7 +669,7 @@ Danh sách:
             key = GEMINI_API_KEYS[key_idx]
             client = genai.Client(api_key=key)
 
-            for attempt in range(2):
+            for attempt in range(len(retry_delays)):
                 try:
                     response = client.models.generate_content(
                         model=model_name,
@@ -524,7 +678,9 @@ Danh sách:
                     )
                     if response and response.text:
                         current_key_index = key_idx
-                        return json.loads(response.text.strip())
+                        parsed = json.loads(response.text.strip())
+                        if isinstance(parsed, list):
+                            return [x for x in parsed if x.get("is_medical_relevant", True) is not False]
                 except Exception as e:
                     error_msg = str(e)
                     print(f"[CẢNH BÁO AI GOOGLE-GENAI ({model_name})] {error_msg}")
@@ -540,9 +696,10 @@ Danh sách:
                         break
 
                     if "503" in error_msg or "unavailable" in error_msg.lower():
-                        if attempt == 0:
-                            print(f"⏳ Model {model_name} đang quá tải, thử lại sau 10s...")
-                            time.sleep(10)
+                        if attempt < len(retry_delays) - 1:
+                            wait_sec = retry_delays[attempt]
+                            print(f"⏳ Model {model_name} đang quá tải (503), thử lại lần {attempt + 2} sau {wait_sec}s...")
+                            time.sleep(wait_sec)
                             continue
                         key_idx = len(GEMINI_API_KEYS)
                         break
@@ -550,7 +707,24 @@ Danh sách:
                     key_idx = len(GEMINI_API_KEYS)
                     break
 
-    return candidates
+    return batch_items
+
+def analyze_with_gemini(candidates):
+    if not candidates or not GEMINI_API_KEYS:
+        return candidates
+
+    batch_size = 15
+    analyzed_results = []
+    for i in range(0, len(candidates), batch_size):
+        batch = candidates[i:i + batch_size]
+        print(f"   Đang phân tích & thẩm định AI lô {i // batch_size + 1} ({len(batch)} TBMT)...")
+        analyzed_batch = analyze_batch_with_gemini(batch)
+        if isinstance(analyzed_batch, list):
+            analyzed_results.extend(analyzed_batch)
+        else:
+            analyzed_results.extend(batch)
+        time.sleep(1)
+    return analyzed_results
 
 # ==============================================================================
 # 12. GỬI EMAIL BÁO CÁO
@@ -565,19 +739,21 @@ def send_email_report(matched_list):
         print("[LỖI CẤU HÌNH] Danh sách email nhận không hợp lệ.")
         return
 
-    email_subject = f"[TBMT TBYT - Địa bàn phụ trách] Báo cáo gói thầu ({START_TIME.strftime('%H:%M %d/%m')} - {TODAY_STR})"
+    matched_list_sorted = sorted(matched_list, key=lambda x: x.get("province", ""))
+    email_subject = f"[TBMT TBYT & PACS - Địa bàn phụ trách] Phát hiện {len(matched_list_sorted)} gói thầu ({START_TIME.strftime('%H:%M %d/%m')} - {TODAY_STR})"
 
-    if not matched_list:
+    if not matched_list_sorted:
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h3 style="color: #d9534f;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT)</h3>
-            <p>Hệ thống đã quét dữ liệu từ <b>{START_TIME.strftime('%H:%M %d/%m/%Y')}</b> đến <b>{TODAY_STR}</b> nhưng chưa phát hiện gói thầu mới khớp từ khóa y tế tại 14 địa phương theo dõi.</p>
+            <p>Hệ thống đã quét dữ liệu từ <b>{START_TIME.strftime('%H:%M %d/%m/%Y')}</b> đến <b>{TODAY_STR}</b> nhưng chưa phát hiện gói thầu mới khớp tiêu chí tại 14 địa phương theo dõi.</p>
         </div>
         """
     else:
         rows = ""
-        for idx, item in enumerate(matched_list, 1):
+        for idx, item in enumerate(matched_list_sorted, 1):
             code = item.get("code", "")
+            notify_ver = item.get("notify_ver", "00")
             title = item.get("title", "")
             amount = item.get("amount", "0.00")
             investor = item.get("investor", "")
@@ -590,8 +766,8 @@ def send_email_report(matched_list):
             rows += f"""
             <tr>
                 <td align="center">{idx}</td>
-                <td><b>{code}</b></td>
-                <td>{title}</td>
+                <td><b>{code}</b><br><small style="color:#666;">PB: {notify_ver}</small></td>
+                <td><b>{title}</b></td>
                 <td align="right"><b><span style="color: #2e7d32;">{amount}</span></b></td>
                 <td>{investor}</td>
                 <td align="center"><b><span style="color: #d9534f;">{province}</span></b></td>
@@ -606,7 +782,7 @@ def send_email_report(matched_list):
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h2 style="color: #0275d8;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT)</h2>
             <p>Khung thời gian quét: từ <b>{START_TIME.strftime('%H:%M %d/%m/%Y')}</b> đến <b>{TODAY_STR}</b></p>
-            <p>Đã lọc phát hiện <b>{len(matched_list)}</b> gói thầu Y tế thuộc địa bàn phụ trách:</p>
+            <p>Đã lọc phát hiện <b>{len(matched_list_sorted)}</b> gói thầu Y tế (TBYT & Mua PACS) thuộc địa bàn phụ trách:</p>
             <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; border-color: #ddd;">
                 <tr style="background-color: #fff2e6;">
                     <th align="center">STT</th>
@@ -635,15 +811,23 @@ def send_email_report(matched_list):
             with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
                 server.login(SENDER_EMAIL, SENDER_PASSWORD)
                 server.sendmail(SENDER_EMAIL, receiver_list, msg.as_string())
-            print(f"[SUCCESS] Đã gửi báo cáo TBMT thành công tới các email: {', '.join(receiver_list)}!")
+            print(f"[SUCCESS] Đã gửi báo cáo TBMT ({len(matched_list_sorted)} gói) tới các email: {', '.join(receiver_list)}!")
         except Exception as e:
             print(f"[LỖI GỬI EMAIL SMTP] {e}")
 
 def main():
-    print(f"=== CRAWL & DEEP-SCAN TBMT (Khung quét: {START_TIME.strftime('%H:%M %d/%m/%Y')} -> {TODAY_STR}) ===")
+    print(f"=== CRAWL & DEEP-SCAN TBMT 14 TỈNH/TP (Khung quét: {START_TIME.strftime('%H:%M %d/%m/%Y')} -> {TODAY_STR}) ===")
     driver = init_driver()
     try:
         matched_list = fetch_tbmt_today(driver)
+        existing_keys = get_existing_keys_from_gsheet()
+        if existing_keys:
+            matched_list = [
+                m for m in matched_list
+                if f"{m.get('code', '')}-{m.get('notify_ver', '00')}" not in existing_keys
+            ]
+            print(f"-> Sau khi đối chiếu chống trùng với Google Sheet: còn {len(matched_list)} TBMT mới hoàn toàn.")
+
         final_matches = analyze_with_gemini(matched_list)
         with open("latest_results.json", "w", encoding="utf-8") as f:
             json.dump(final_matches, f, ensure_ascii=False, indent=2)
