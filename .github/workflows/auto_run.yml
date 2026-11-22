@@ -40,9 +40,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          LAST_RUN=$(gh api "repos/${{ github.repository }}/actions/workflows/auto_run.yml/runs?event=schedule&status=success&per_page=1" --jq '.workflow_runs[0].created_at // empty')
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            LAST_RUN=$(gh api "repos/${{ github.repository }}/actions/workflows/auto_run.yml/runs?event=schedule&status=success&per_page=1" --jq '.workflow_runs[0].created_at // empty')
+          else
+            LAST_RUN=""
+          fi
           echo "last_run=$LAST_RUN" >> $GITHUB_OUTPUT
-          echo "Mốc lịch chạy tự động TBMT thành công gần nhất: $LAST_RUN"
+          echo "Chế độ: ${{ github.event_name }} | Mốc lịch chạy gần nhất: $LAST_RUN"
 
       - name: Chạy BOT TBMT (Bước 1 - Quét, Lọc Trùng GSheet, Phân Tích AI & Gửi Email)
         env:
