@@ -31,20 +31,22 @@ EVENT_NAME_ENV = os.environ.get("GITHUB_EVENT_NAME", "").strip()
 # Nhóm 1: Từ khóa thiết bị y tế & giải pháp PACS đặc thù (khớp trực tiếp)
 SPECIFIC_DEVICE_KEYWORDS = [
     # Nội soi - Phẫu thuật - Laser
-    "nội soi", "ống soi", "optic nội soi", "ercp", "robot phẫu thuật",
-    "tán sỏi laser", "máy tán sỏi",
+    "nội soi", "ống soi", "optic nội soi", "dụng cụ nội soi", "ercp",
+    "robot phẫu thuật", "tán sỏi laser", "máy tán sỏi", "dao mổ",
+    "bộ xử lý hình ảnh",
     # Phòng mổ - Gây mê - Hồi sức - Giường
-    "bàn mổ", "đèn mổ", "máy gây mê", "monitor theo dõi bệnh nhân",
-    "máy theo dõi bệnh nhân", "bơm tiêm điện", "máy truyền dịch",
+    "bàn mổ", "đèn mổ", "thiết bị phòng mổ", "máy gây mê",
+    "monitor theo dõi bệnh nhân", "máy theo dõi bệnh nhân",
+    "bơm tiêm điện", "máy truyền dịch",
     "giường icu", "giường cấp cứu", "giường đa năng", "giường bệnh",
     "hồi sức cấp cứu", "hồi sức sơ sinh", "máy thở", "máy phá rung tim",
     # Khí y tế - Vận chuyển - Tiệt trùng
     "hệ thống khí y tế", "bồn oxy lỏng", "oxy trung tâm", "vận chuyển mẫu",
-    "máy hấp tiệt trùng", "nhiệt độ thấp", "máy hấp ướt",
+    "máy hấp tiệt trùng", "nhiệt độ thấp", "máy hấp ướt", "nồi hấp",
     # Sản khoa - Chẩn đoán hình ảnh - PACS - Chuyên khoa
     "bàn khám sản", "monitor sản khoa", "c-arm", "c arm", "x-quang",
-    "máy siêu âm", "siêu âm màu", "siêu âm chẩn đoán", "thận nhân tạo",
-    "máy chạy thận", "hdf online",
+    "máy siêu âm", "siêu âm màu", "siêu âm chẩn đoán", "đầu dò",
+    "thận nhân tạo", "máy chạy thận", "hdf online",
     "pacs", "ris/pacs", "ris - pacs", "lưu trữ và truyền tải hình ảnh",
     # Gói mua sắm / sửa chữa thiết bị y tế tổng thể
     "thiết bị y tế chuyên môn", "thiết bị y tế chuyên dùng",
@@ -71,7 +73,7 @@ CONSUMABLE_MEDICAL_TERMS = [
     "phim x-quang", "phim chụp", "bơm, kim tiêm", "bơm kim tiêm",
     "dây truyền", "găng tay", "bông, dung dịch", "băng, gạc",
     "vật tư tiêu hao", "hóa chất xét nghiệm", "sinh phẩm",
-    "vật tư y tế sử dụng trong"
+    "vật tư y tế sử dụng trong", "vật tư dùng trong"
 ]
 
 # Cụm từ nhận diện gói THUÊ PACS / THUÊ THIẾT BỊ / THUÊ PHẦN MỀM (loại trừ tuyệt đối)
@@ -104,7 +106,7 @@ LOCATION_ALIASES = {
         "bình dương", "bà rịa", "vũng tàu", "phú mỹ", "nhi đồng", "bình dân",
         "viện tim", "nhân ái", "đại học y dược", "ung bướu", "gò vấp",
         "bệnh nhiệt đới", "phạm ngọc thạch", "chấn thương", "lê văn thịnh",
-        "thuận an", "tân uyên"
+        "thuận an", "tân uyên", "bệnh viện 30-4"
     ],
     "Thành phố Đồng Nai": ["đồng nai", "biên hòa", "long khánh", "bình phước", "đồng xoài", "long thành"],
     "Tỉnh Tây Ninh": ["tây ninh", "long an", "tân an", "thủ thừa", "tân hưng"],
@@ -124,9 +126,9 @@ if LAST_RUN_ENV:
         parsed_last_run = datetime.fromisoformat(LAST_RUN_ENV.replace("Z", "+00:00")).astimezone(TZ_VN)
         START_TIME = parsed_last_run - timedelta(minutes=15)
     except Exception:
-        START_TIME = NOW_VN - timedelta(hours=24)
+        START_TIME = NOW_VN - timedelta(hours=48)
 else:
-    START_TIME = NOW_VN - timedelta(hours=24)
+    START_TIME = NOW_VN - timedelta(hours=48)
 
 BASE_DOMAIN = "muasamcong.mof.gov.vn"
 PRIMARY_MODEL = "gemini-3.8-flash"
@@ -194,16 +196,26 @@ def is_published_in_time_window(item):
     except Exception:
         return True
 
+def format_date_str(date_str):
+    if not date_str:
+        return "Chưa xác định"
+    try:
+        clean_str = date_str.split(".")[0].replace("Z", "")
+        dt_obj = datetime.strptime(clean_str, "%Y-%m-%dT%H:%M:%S")
+        return dt_obj.strftime("%H:%M %d/%m/%Y")
+    except Exception:
+        return str(date_str)
+
 def format_currency(val):
-    if not val:
+    if val is None or val == "":
         return "0.00"
     try:
         if isinstance(val, list) and len(val) > 0:
             val = val[0]
         num = float(val)
-        if num == 0:
+        if num <= 0:
             return "0.00"
-        return f"{num:,.2f}"
+        return f"{int(num):,} VND".replace(",", ".")
     except Exception:
         return str(val)
 
@@ -213,7 +225,8 @@ def format_currency(val):
 def check_location(item, raw_str):
     found_locs = []
     investor = str(item.get("investorName") or item.get("procuringEntityName") or "").lower()
-    title = str(item.get("bidName") or item.get("name") or "").lower()
+    title_raw = item.get("bidName")
+    title = str(title_raw[0] if isinstance(title_raw, list) and title_raw else (title_raw or item.get("name") or "")).lower()
     search_text = f"{investor} {title} {raw_str}".lower()
 
     locations_arr = item.get("locations", [])
@@ -231,69 +244,139 @@ def check_location(item, raw_str):
     return list(set(found_locs))
 
 # ==============================================================================
-# 6. BÓC TÁCH DEEP-SCAN SÂU BIỂU MẪU 10B / HSMT (API GET-ALL-HSMT)
+# 6. BÓC TÁCH DEEP-SCAN SÂU BIỂU MẪU 10B / HSMT & CHÀO GIÁ TRỰC TUYẾN (CGTTRG)
 # ==============================================================================
-def get_hsmt_form_values(driver, notify_no, notify_version="00", bid_field="HH"):
+def get_hsmt_form_values(driver, notify_id, notify_no, notify_version="00", bid_field="HH", bid_form="DTRR", step_code=""):
     clean_bid_field = (bid_field or "").strip() or "HH"
-    js_get_hsmt = """
+    is_reoffer = (bid_form in ["CGTTRG", "CGTT"]) or ("reoffer" in (step_code or "").lower())
+
+    js_get_hsmt_all = """
     var callback = arguments[arguments.length - 1];
-    var notifyNo = arguments[0];
-    var notifyVersion = arguments[1];
-    var bidField = arguments[2];
-    
-    fetch('/api/unau/portal/ebidinv/get-all-hsmt', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json, text/plain, */*'
-        },
-        body: JSON.stringify({
-            body: {
-                notifyNo: notifyNo,
-                notifyVersion: notifyVersion,
-                bidField: bidField,
-                processType: "LDT"
-            }
-        })
-    })
-    .then(response => response.json())
-    .then(data => callback(data))
-    .catch(err => callback({ error: err.toString() }));
+    var notifyId = arguments[0];
+    var notifyNo = arguments[1];
+    var notifyVersion = arguments[2];
+    var bidField = arguments[3];
+    var isReoffer = arguments[4];
+
+    async function fetchDetails() {
+        let collected = [];
+
+        if (isReoffer && notifyId) {
+            try {
+                let r1 = await fetch('/o/egp-portal-contractor-selection-v2/services/lcnt_tbmcgtt_hsmt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/plain, */*' },
+                    body: JSON.stringify({ id: notifyId, processApply: "LDT" })
+                });
+                let d1 = await r1.json();
+                if (d1) collected.push(d1);
+            } catch (e) {}
+
+            try {
+                let r2 = await fetch('/o/egp-portal-contractor-selection-v2/services/online-reoffer/detail', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/plain, */*' },
+                    body: JSON.stringify({ id: notifyId })
+                });
+                let d2 = await r2.json();
+                if (d2) collected.push(d2);
+            } catch (e) {}
+        }
+
+        if (collected.length === 0) {
+            try {
+                let r3 = await fetch('/api/unau/portal/ebidinv/get-all-hsmt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/plain, */*' },
+                    body: JSON.stringify({
+                        body: {
+                            notifyNo: notifyNo,
+                            notifyVersion: notifyVersion,
+                            bidField: bidField,
+                            processType: "LDT"
+                        }
+                    })
+                });
+                let d3 = await r3.json();
+                if (d3) collected.push(d3);
+            } catch (e) {}
+        }
+
+        callback(collected);
+    }
+
+    fetchDetails();
     """
     try:
-        res = driver.execute_async_script(js_get_hsmt, notify_no, notify_version, clean_bid_field)
-        if isinstance(res, (list, dict)):
+        res = driver.execute_async_script(
+            js_get_hsmt_all,
+            notify_id,
+            notify_no,
+            notify_version,
+            clean_bid_field,
+            is_reoffer
+        )
+        if isinstance(res, list) and res:
+            # Trích xuất gọn các dòng hàng hóa trong formValue (bỏ formContent schema cồng kềnh)
+            extracted_items = []
+            for block in res:
+                if not isinstance(block, dict):
+                    continue
+                bidding_list = block.get("bidInvBiddingDTO") or []
+                for dto in bidding_list:
+                    if isinstance(dto, dict) and dto.get("formValue"):
+                        try:
+                            fv = json.loads(dto["formValue"])
+                            tbl = fv.get("Table") or []
+                            for row in tbl:
+                                if isinstance(row, dict):
+                                    extracted_items.append({
+                                        "ten_hang_hoa": row.get("name", ""),
+                                        "don_vi": row.get("uom", ""),
+                                        "so_luong": row.get("qty", ""),
+                                        "model": row.get("code", ""),
+                                        "hang_sx": row.get("manufacture", ""),
+                                        "xuat_xu": row.get("goodsOrigin", ""),
+                                        "cau_hinh_tom_tat": str(row.get("specification", ""))[:500]
+                                    })
+                        except Exception:
+                            extracted_items.append(str(dto.get("formValue"))[:1500])
+
+                if block.get("bidPlan") and isinstance(block["bidPlan"], dict):
+                    extracted_items.append({"planName": block["bidPlan"].get("name", "")})
+
+            if extracted_items:
+                return json.dumps(extracted_items, ensure_ascii=False).lower()
             return json.dumps(res, ensure_ascii=False).lower()
     except Exception:
         pass
     return ""
 
 # ==============================================================================
-# 7. HÀM TẠO URL CHI TIẾT CHUẨN V2
+# 7. HÀM TẠO URL CHI TIẾT CHUẨN V2 (HỖ TRỢ CẢ ĐẤU THẦU THƯỜNG & CHÀO GIÁ TRỰC TUYẾN)
 # ==============================================================================
 def build_detail_url(item, code, notify_ver):
     notify_id = str(item.get("id") or item.get("notifyId") or "")
     plan_no = str(item.get("planNo") or item.get("khlcntNo") or "")
     bid_form = str(item.get("bidForm") or "DTRR")
-    
+    step_code = str(item.get("stepCode") or "notify-contractor-step-1-tbmt")
+
     url = (
         f"https://{BASE_DOMAIN}/web/guest/contractor-selection?"
         f"p_p_id=egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2"
         f"&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view"
         f"&_egpportalcontractorselectionv2_WAR_egpportalcontractorselectionv2_render=detail-v2"
         f"&type=es-notify-contractor"
-        f"&stepCode=notify-contractor-step-1-tbmt"
+        f"&stepCode={step_code}"
         f"&notifyNo={code}"
         f"&notifyVersion={notify_ver}"
     )
-    
     if notify_id:
         url += f"&id={notify_id}&notifyId={notify_id}"
     if plan_no:
         url += f"&planNo={plan_no}"
     if bid_form:
         url += f"&bidForm={bid_form}"
-        
     url += "&processApply=LDT&bidMode=1_MTHS&isInternet=1"
     return url
 
@@ -398,7 +481,7 @@ def evaluate_tbmt_medical_relevance(title, investor, hsmt_str, raw_str):
 # 10. TRÍCH XUẤT THÔNG TIN TBMT THEO KHUNG THỜI GIAN PHÂN TẦNG (150 - 500)
 # ==============================================================================
 def fetch_tbmt_today(driver):
-    print(f"-> Chế độ chạy: {EVENT_NAME_ENV or 'local'} | Mốc lịch sử gốc: {LAST_RUN_ENV or 'Mặc định 24h'}")
+    print(f"-> Chế độ chạy: {EVENT_NAME_ENV or 'local'} | Mốc lịch sử gốc: {LAST_RUN_ENV or 'Mặc định 48h'}")
     print(f"-> Mở Session Mua Sắm Công TBMT (Khung quét có đệm: {START_TIME.strftime('%H:%M %d/%m/%Y')} -> {TODAY_STR})...")
     driver.get(f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index")
     time.sleep(9)
@@ -427,28 +510,43 @@ def fetch_tbmt_today(driver):
     var token = arguments[3];
     var fromDate = arguments[4];
     var toDate = arguments[5];
-    
+
     let url = '/o/egp-portal-contractor-selection-v2/services/smart/search';
     if (token) {
         url += '?token=' + token;
     }
 
-    const payloadObj = [{
-        pageSize: pageSize,
-        pageNumber: String(pageNum),
-        query: [{
-            index: "es-contractor-selection",
-            keyWord: kw,
-            matchType: "all-1",
-            matchFields: ["notifyNo", "bidName"],
-            filters: [
-                { fieldName: "type", searchType: "in", fieldValues: ["es-notify-contractor"] },
-                { fieldName: "caseKHKQ", searchType: "not_in", fieldValues: ["1"] },
-                { fieldName: "publicDate", searchType: "range", from: fromDate, to: toDate }
-            ]
-        }]
-    }];
-    
+    const baseFilter = [
+        { fieldName: "type", searchType: "in", fieldValues: ["es-notify-contractor"] },
+        { fieldName: "caseKHKQ", searchType: "not_in", fieldValues: ["1"] },
+        { fieldName: "publicDate", searchType: "range", from: fromDate, to: toDate }
+    ];
+
+    const payloadObj = [
+        {
+            pageSize: pageSize,
+            pageNumber: String(pageNum),
+            query: [{
+                index: "es-contractor-selection",
+                keyWord: kw,
+                matchType: "all-1",
+                matchFields: ["notifyNo", "bidName"],
+                filters: baseFilter
+            }]
+        },
+        {
+            pageSize: pageSize,
+            pageNumber: String(pageNum),
+            query: [{
+                index: "es-contractor-selection",
+                keyWord: kw,
+                matchType: "all-1",
+                matchFields: ["generalTasks"],
+                filters: baseFilter
+            }]
+        }
+    ];
+
     fetch(url, {
         method: 'POST',
         headers: {
@@ -487,16 +585,17 @@ def fetch_tbmt_today(driver):
                 token_val = new_tok
             api_calls_since_refresh = 0
 
-        print(f"-> Truy vấn API Smart Search TBMT cho: '{kw}' (Mục tiêu tối đa {max_records} bản ghi)...")
+        print(f"-> Truy vấn API Smart Search TBMT cho: '{kw}' (Mục tiêu tối đa {max_records} bản ghi/nhóm)...")
         matched_in_kw = 0
         province_in_kw = 0
-        fetched_in_kw = 0
-        total_elements = None
+        fetched_per_block = 0
+        total_fetched_in_kw = 0
+        max_total_elements = None
         page_num = 0
         retried_token_for_kw = False
 
-        while fetched_in_kw < max_records:
-            current_page_size = min(SERVER_MAX_PAGE_SIZE, max_records - fetched_in_kw)
+        while fetched_per_block < max_records:
+            current_page_size = min(SERVER_MAX_PAGE_SIZE, max_records - fetched_per_block)
             try:
                 raw_res = driver.execute_async_script(
                     js_fetch_search,
@@ -511,21 +610,33 @@ def fetch_tbmt_today(driver):
 
                 res = raw_res.get("body") if isinstance(raw_res, dict) else raw_res
                 data_list = []
-                
-                if isinstance(res, list) and len(res) > 0:
-                    first_item = res[0]
-                    if isinstance(first_item, dict):
-                        page_obj = first_item.get("page", {})
-                        data_list = page_obj.get("content", [])
-                        if total_elements is None:
-                            total_elements = page_obj.get("totalElements")
+                max_block_len = 0
+                block_totals = []
+
+                if isinstance(res, list):
+                    for block in res:
+                        if isinstance(block, dict):
+                            page_obj = block.get("page", {})
+                            content = page_obj.get("content", [])
+                            t_el = page_obj.get("totalElements")
+                            if isinstance(t_el, int):
+                                block_totals.append(t_el)
+                            if isinstance(content, list):
+                                data_list.extend(content)
+                                if len(content) > max_block_len:
+                                    max_block_len = len(content)
                 elif isinstance(res, dict):
                     page_obj = res.get("page", {})
                     data_list = page_obj.get("content", [])
-                    if total_elements is None:
-                        total_elements = page_obj.get("totalElements")
+                    max_block_len = len(data_list)
+                    t_el = page_obj.get("totalElements")
+                    if isinstance(t_el, int):
+                        block_totals.append(t_el)
 
-                if (not isinstance(data_list, list) or not data_list) and page_num == 0 and total_elements is None and not retried_token_for_kw:
+                if max_total_elements is None and block_totals:
+                    max_total_elements = max(block_totals)
+
+                if not data_list and page_num == 0 and max_total_elements is None and not retried_token_for_kw:
                     retried_token_for_kw = True
                     new_tok = refresh_session_token(driver, kw)
                     if new_tok and new_tok != token_val:
@@ -533,10 +644,11 @@ def fetch_tbmt_today(driver):
                         api_calls_since_refresh = 0
                         continue
 
-                if not isinstance(data_list, list) or not data_list:
+                if not data_list:
                     break
 
-                fetched_in_kw += len(data_list)
+                fetched_per_block += current_page_size
+                total_fetched_in_kw += len(data_list)
 
                 for item in data_list:
                     if not isinstance(item, dict):
@@ -545,7 +657,8 @@ def fetch_tbmt_today(driver):
                     if not is_published_in_time_window(item):
                         continue
 
-                    code = str(item.get("notifyNo") or item.get("notifyNoStand") or item.get("bidNo") or item.get("id") or "").strip()
+                    notify_id = str(item.get("id") or item.get("notifyId") or "").strip()
+                    code = str(item.get("notifyNo") or item.get("notifyNoStand") or item.get("bidNo") or notify_id).strip()
                     notify_ver = str(item.get("notifyVersion") or "00").strip()
                     u_key = f"{code}-{notify_ver}"
 
@@ -555,16 +668,19 @@ def fetch_tbmt_today(driver):
                     scanned_keys.add(u_key)
 
                     bid_field = str(item.get("bidField") or "HH").strip() or "HH"
+                    bid_form = str(item.get("bidForm") or "DTRR").strip()
+                    step_code = str(item.get("stepCode") or "").strip()
+                    bid_close_date = format_date_str(item.get("bidCloseDate"))
 
                     bid_name_raw = item.get("bidName")
                     if isinstance(bid_name_raw, list) and len(bid_name_raw) > 0:
                         title = str(bid_name_raw[0]).replace("\n", " ").strip()
                     else:
                         title = str(bid_name_raw or item.get("name") or "").replace("\n", " ").strip()
-                        
+
                     investor = str(item.get("investorName") or item.get("procuringEntityName") or "").strip()
-                    
-                    est_amount_raw = item.get("estAmount") or item.get("investTotal") or item.get("bidPrice")
+                    # Đọc chính xác giá trị gói thầu từ bidPrice (theo payload thực tế) trước rồi mới tới estAmount/priceInit
+                    est_amount_raw = item.get("bidPrice") or item.get("estAmount") or item.get("priceInit") or item.get("investTotal")
                     formatted_amount = format_currency(est_amount_raw)
                     detail_url = build_detail_url(item, code, notify_ver)
 
@@ -577,8 +693,16 @@ def fetch_tbmt_today(driver):
                     province_in_kw += 1
 
                     hsmt_str = ""
-                    if code:
-                        hsmt_str = get_hsmt_form_values(driver, code, notify_ver, bid_field)
+                    if code or notify_id:
+                        hsmt_str = get_hsmt_form_values(
+                            driver,
+                            notify_id=notify_id,
+                            notify_no=code,
+                            notify_version=notify_ver,
+                            bid_field=bid_field,
+                            bid_form=bid_form,
+                            step_code=step_code
+                        )
                         if hsmt_str:
                             raw_str += " " + hsmt_str
 
@@ -593,23 +717,29 @@ def fetch_tbmt_today(driver):
                             if any(k.lower() in f"{code} {title}".lower() for k in matched_kws)
                             else "Chi tiết Hàng hóa / Biểu mẫu 10B"
                         )
+                        stage_label = (
+                            "TBMT (Chào giá trực tuyến rút gọn)"
+                            if bid_form in ["CGTTRG", "CGTT"]
+                            else "TBMT (Mời thầu chính thức)"
+                        )
                         unique_matches[u_key] = {
                             "code": code,
                             "notify_ver": notify_ver,
-                            "stage": "TBMT (Mời thầu chính thức)",
+                            "stage": stage_label,
                             "title": title,
                             "amount": formatted_amount,
+                            "bid_close_date": bid_close_date,
                             "investor": investor,
                             "province": ", ".join(matched_province),
                             "matched_kw": ", ".join(matched_kws),
                             "location": location_detail,
                             "detail_url": detail_url,
-                            "snippet": (hsmt_str[:1500] if hsmt_str else raw_str[:1500])
+                            "snippet": (hsmt_str[:2200] if hsmt_str else raw_str[:1500])
                         }
 
-                if len(data_list) < current_page_size:
+                if max_block_len < current_page_size:
                     break
-                if isinstance(total_elements, int) and fetched_in_kw >= total_elements:
+                if isinstance(max_total_elements, int) and fetched_per_block >= max_total_elements:
                     break
 
                 page_num += 1
@@ -618,26 +748,92 @@ def fetch_tbmt_today(driver):
                 print(f"[CẢNH BÁO FETCH TBMT] Từ khóa '{kw}' (Trang {page_num}): {e}")
                 break
 
-        total_label = f"/{total_elements}" if isinstance(total_elements, int) else ""
-        print(f"    + Đã tải {fetched_in_kw}{total_label} TBMT (thuộc 14 tỉnh: {province_in_kw}) -> Khớp TBYT / Mua PACS: {matched_in_kw} gói thầu.")
+        total_label = f" (tổng max/nhóm: {max_total_elements})" if isinstance(max_total_elements, int) else ""
+        print(f"    + Đã tải {total_fetched_in_kw} TBMT{total_label} (thuộc 14 tỉnh: {province_in_kw}) -> Khớp TBYT / Mua PACS: {matched_in_kw} gói thầu.")
         time.sleep(0.35)
 
     print(f"=== TỔNG KẾT QUÉT TBMT 14 TỈNH/TP: {len(unique_matches)} GÓI SẠCH KHỚP TIÊU CHÍ ===")
     return list(unique_matches.values())
 
 # ==============================================================================
-# 11. PHÂN TÍCH VỚI GEMINI AI (HẬU KIỂM LOẠI BỎ GÓI RÁC + PHÂN LOẠI NHÓM BU)
+# 11. TỰ ĐỘNG DÒ TÌM MODEL GEMINI MỚI NHẤT & PHÂN TÍCH DỮ LIỆU
 # ==============================================================================
+_CACHED_GEMINI_MODELS = None
+
+def get_prioritized_gemini_models(client):
+    """Tự động gọi API list models của Google, lọc dòng Flash/Pro hỗ trợ generateContent
+    và sắp xếp từ phiên bản mới nhất đến cũ nhất."""
+    global _CACHED_GEMINI_MODELS
+    if _CACHED_GEMINI_MODELS:
+        return _CACHED_GEMINI_MODELS
+
+    default_fallback = [
+        PRIMARY_MODEL,
+        FALLBACK_MODEL,
+        "gemini-3.5-flash",
+        "gemini-2.5-flash",
+        "gemini-3.1-pro-preview"
+    ]
+
+    try:
+        flash_candidates = []
+        pro_candidates = []
+
+        for m in client.models.list():
+            raw_name = getattr(m, "name", "") or ""
+            model_id = raw_name.replace("models/", "").strip()
+            supported = getattr(m, "supported_actions", []) or []
+
+            if supported and "generateContent" not in supported:
+                continue
+            if any(x in model_id.lower() for x in ["embedding", "imagen", "veo", "tts", "audio", "live", "robotics", "computer-use"]):
+                continue
+
+            ver_match = re.search(r"gemini-(\d+)(?:\.(\d+))?", model_id.lower())
+            if not ver_match:
+                continue
+
+            major = int(ver_match.group(1))
+            minor = int(ver_match.group(2) or 0)
+            is_stable = 0 if "preview" in model_id.lower() or "exp" in model_id.lower() else 1
+            is_lite = 0 if "lite" in model_id.lower() else 1
+
+            score = (major, minor, is_stable, is_lite)
+
+            if "flash" in model_id.lower():
+                flash_candidates.append((score, model_id))
+            elif "pro" in model_id.lower():
+                pro_candidates.append((score, model_id))
+
+        flash_candidates.sort(key=lambda x: x[0], reverse=True)
+        pro_candidates.sort(key=lambda x: x[0], reverse=True)
+
+        ordered_models = []
+        for _, m_id in flash_candidates[:4] + pro_candidates[:2]:
+            if m_id not in ordered_models:
+                ordered_models.append(m_id)
+
+        if ordered_models:
+            _CACHED_GEMINI_MODELS = ordered_models
+            print(f"-> Danh sách Model Gemini tự động xếp hạng (Mới -> Cũ): {ordered_models}")
+            return ordered_models
+    except Exception as e:
+        print(f"[CẢNH BÁO LẤY DANH SÁCH MODEL GEMINI] {e} -> Dùng danh sách dự phòng.")
+
+    _CACHED_GEMINI_MODELS = list(dict.fromkeys(default_fallback))
+    return _CACHED_GEMINI_MODELS
+
+
 def analyze_batch_with_gemini(batch_items):
     global current_key_index, GEMINI_API_KEYS
     from google import genai
     from google.genai import types
 
-    models_to_try = [
-        PRIMARY_MODEL,
-        FALLBACK_MODEL,
-        "gemini-3.1-pro-preview"
-    ]
+    if not GEMINI_API_KEYS:
+        return batch_items
+
+    init_client = genai.Client(api_key=GEMINI_API_KEYS[current_key_index])
+    models_to_try = get_prioritized_gemini_models(init_client)
 
     prompt = f"""
 Bạn là chuyên gia thẩm định dữ liệu Thông báo mời thầu (TBMT) Trang thiết bị Y tế và Hệ thống PACS (chỉ mua đứt/đầu tư, KHÔNG lấy gói thuê).
@@ -652,8 +848,8 @@ Yêu cầu BẮT BUỘC:
      + Gói THUÊ thiết bị y tế, THUÊ hệ thống RIS/PACS, dịch vụ chụp X-quang lưu động phục vụ khám sức khỏe.
      + Gói mua sắm thuần vật tư y tế tiêu hao (bơm kim tiêm, găng tay, bông băng gạc, phim X-quang, hóa chất xét nghiệm, sinh phẩm).
      + Gói sửa chữa nhỏ/duy tu cơ sở hạ tầng bệnh viện (ốp gạch, sơn tường, chống thấm, lợp mái).
-3. Viết 1–2 câu tóm tắt rõ ràng mặt hàng thiết bị / hệ thống PACS chính trong gói thầu (kèm số lượng nếu có trong "snippet") vào trường "reason".
-4. Giữ nguyên trường "stage": "TBMT (Mời thầu chính thức)".
+3. Viết 1-2 câu tóm tắt rõ ràng mặt hàng thiết bị / hệ thống PACS chính trong gói thầu (kèm số lượng, model/hãng nếu có trong "snippet", và thời điểm đóng thầu) vào trường "reason".
+4. Giữ nguyên trường "stage".
 5. Thêm trường "bu_group": phân loại vào 1 trong các nhóm [Nội soi - Tiêu hóa, Phòng mổ - Gây mê, Hồi sức - Giường bệnh, Tiệt trùng, Khí y tế, Chẩn đoán hình ảnh, Đa chuyên khoa / TBYT tổng hợp].
 6. Trả về đúng mảng JSON thuần túy (không kèm markdown).
 
@@ -661,7 +857,7 @@ Danh sách:
 {json.dumps(batch_items, ensure_ascii=False, indent=2)}
 """
 
-    retry_delays = [8, 15, 25]
+    retry_delays = [5]
 
     for model_name in models_to_try:
         key_idx = current_key_index
@@ -669,7 +865,7 @@ Danh sách:
             key = GEMINI_API_KEYS[key_idx]
             client = genai.Client(api_key=key)
 
-            for attempt in range(len(retry_delays)):
+            for attempt in range(len(retry_delays) + 1):
                 try:
                     response = client.models.generate_content(
                         model=model_name,
@@ -696,11 +892,12 @@ Danh sách:
                         break
 
                     if "503" in error_msg or "unavailable" in error_msg.lower():
-                        if attempt < len(retry_delays) - 1:
+                        if attempt < len(retry_delays):
                             wait_sec = retry_delays[attempt]
-                            print(f"⏳ Model {model_name} đang quá tải (503), thử lại lần {attempt + 2} sau {wait_sec}s...")
+                            print(f"⏳ Model {model_name} đang quá tải (503), thử lại sau {wait_sec}s...")
                             time.sleep(wait_sec)
                             continue
+                        print(f"↪️ Model {model_name} tiếp tục quá tải (503), chuyển sang model dự phòng kế tiếp...")
                         key_idx = len(GEMINI_API_KEYS)
                         break
 
@@ -708,6 +905,7 @@ Danh sách:
                     break
 
     return batch_items
+
 
 def analyze_with_gemini(candidates):
     if not candidates or not GEMINI_API_KEYS:
@@ -756,17 +954,18 @@ def send_email_report(matched_list):
             notify_ver = item.get("notify_ver", "00")
             title = item.get("title", "")
             amount = item.get("amount", "0.00")
+            bid_close = item.get("bid_close_date", "Chưa xác định")
             investor = item.get("investor", "")
             province = item.get("province", "Theo dõi")
             location = item.get("location", "Biểu mẫu / Hàng hóa")
             reason = item.get("reason") or "Khớp từ khóa theo dõi y tế trong Biểu mẫu 10B/HSMT"
             matched_kw = item.get("matched_kw", "")
             detail_url = item.get("detail_url") or f"https://{BASE_DOMAIN}/web/guest/contractor-selection?render=index"
-            
+
             rows += f"""
             <tr>
                 <td align="center">{idx}</td>
-                <td><b>{code}</b><br><small style="color:#666;">PB: {notify_ver}</small></td>
+                <td><b>{code}</b><br><small style="color:#666;">PB: {notify_ver}</small><br><small style="color:#d9534f;">Đóng thầu: {bid_close}</small></td>
                 <td><b>{title}</b></td>
                 <td align="right"><b><span style="color: #2e7d32;">{amount}</span></b></td>
                 <td>{investor}</td>
@@ -777,7 +976,7 @@ def send_email_report(matched_list):
                 <td align="center"><a href="{detail_url}" target="_blank" style="color: #0275d8; font-weight: bold;">Xem ngay</a></td>
             </tr>
             """
-            
+
         html_body = f"""
         <div style="font-family: Arial, sans-serif; padding: 20px;">
             <h2 style="color: #0275d8;">BÁO CÁO THÔNG BÁO MỜI THẦU (TBMT)</h2>
@@ -786,7 +985,7 @@ def send_email_report(matched_list):
             <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; border-color: #ddd;">
                 <tr style="background-color: #fff2e6;">
                     <th align="center">STT</th>
-                    <th>Mã TBMT</th>
+                    <th>Mã TBMT / Hạn Đóng</th>
                     <th>Tên Gói Thầu</th>
                     <th align="right">Giá Trị Gói Thầu (VND)</th>
                     <th>Bên Mời Thầu</th>
