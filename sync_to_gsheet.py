@@ -32,14 +32,12 @@ SHEET_HEADERS_BY_TAB = {
         "Từ Khóa Khớp", "Vị Trí Khớp", "BU Gợi Ý",
         "Tóm Tắt Chi Tiết AI", "Link Chi Tiết"
     ] + SALES_WORKFLOW_HEADERS,
-
     "KHLCNT": [
         "Mã KHLCNT (Key)", "Số Quyết Định", "Giai Đoạn", "Ngày Đăng",
         "Tỉnh / TP", "Chủ Đầu Tư", "Tên KHLCNT", "Tổng Mức Đầu Tư",
         "Thời Gian Dự Kiến LCNT", "Từ Khóa Khớp", "Vị Trí Khớp",
         "BU Gợi Ý", "Tóm Tắt Chi Tiết AI", "Link Chi Tiết"
     ] + SALES_WORKFLOW_HEADERS,
-
     "TBMT": [
         "Mã TBMT (Key)", "Phiên Bản", "Giai Đoạn", "Ngày Quét",
         "Tỉnh / TP", "Bên Mời Thầu", "Tên Gói Thầu",
@@ -53,6 +51,23 @@ COLUMN_WIDTHS_BY_TAB = {
     "KHLCNT": [155, 130, 165, 130, 145, 220, 320, 145, 145, 140, 135, 155, 340, 110, 140, 140, 130, 140, 140],
     "TBMT": [155, 85, 165, 130, 145, 220, 320, 150, 140, 135, 155, 340, 110, 140, 140, 130, 140, 140]
 }
+
+# Các vùng miền dùng dấu phẩy làm dấu thập phân -> Google Sheets bắt buộc dùng dấu ';' phân cách tham số hàm
+COMMA_LOCALE_PREFIXES = (
+    "en_", "ja_", "ko_", "zh_", "th_", "ms_", "fil_", "hi_", "ar_", "he_"
+)
+
+
+def get_formula_separator(spreadsheet):
+    """Tự động kiểm tra Locale của Google Sheet để trả về ',' hoặc ';' phù hợp."""
+    try:
+        locale = str(getattr(spreadsheet, "locale", "") or "").strip()
+        print(f"-> Phát hiện Locale Google Sheet: '{locale}'")
+        if locale.lower().startswith(COMMA_LOCALE_PREFIXES):
+            return ","
+        return ";"
+    except Exception:
+        return ";"
 
 
 def connect_gsheet():
@@ -75,19 +90,16 @@ def apply_sheet_layout_and_wrap(spreadsheet, ws, tab_name):
         sheet_id = ws.id
         col_widths = COLUMN_WIDTHS_BY_TAB.get(tab_name, [])
         num_cols = len(col_widths) or 18
-
         ws.format(f"A1:{gspread.utils.rowcol_to_a1(2000, num_cols)}", {
             "wrapStrategy": "WRAP",
             "verticalAlignment": "TOP"
         })
-
         ws.format("1:1", {
             "textFormat": {"bold": True},
             "backgroundColor": {"red": 0.88, "green": 0.94, "blue": 1.0},
             "verticalAlignment": "MIDDLE",
             "wrapStrategy": "WRAP"
         })
-
         ws.freeze(rows=1, cols=1)
 
         requests = []
@@ -104,7 +116,6 @@ def apply_sheet_layout_and_wrap(spreadsheet, ws, tab_name):
                     "fields": "pixelSize"
                 }
             })
-
         if requests:
             spreadsheet.batch_update({"requests": requests})
     except Exception as e:
@@ -125,8 +136,7 @@ def get_or_create_tab(spreadsheet, tab_name, headers):
     existing_first_row = ws.row_values(1)
     if not existing_first_row:
         ws.append_row(headers, value_input_option="USER_ENTERED")
-
-    apply_sheet_layout_and_wrap(spreadsheet, ws, tab_name)
+        apply_sheet_layout_and_wrap(spreadsheet, ws, tab_name)
     return ws
 
 
@@ -140,11 +150,11 @@ def build_unique_key(source_type, item):
     return code
 
 
-def format_hyperlink(url):
+def format_hyperlink(url, sep=";"):
     clean_url = str(url or "").strip().replace('"', '%22')
     if not clean_url:
         return ""
-    return f'=HYPERLINK("{clean_url}", "Xem chi tiết")'
+    return f'=HYPERLINK("{clean_url}"{sep} "Xem chi tiết")'
 
 
 def sync_data(source_type):
@@ -171,6 +181,7 @@ def sync_data(source_type):
     if not spreadsheet:
         return
 
+    sep = get_formula_separator(spreadsheet)
     headers = SHEET_HEADERS_BY_TAB[source_type]
     ws = get_or_create_tab(spreadsheet, source_type, headers)
 
@@ -182,7 +193,6 @@ def sync_data(source_type):
         u_key = build_unique_key(source_type, item)
         if not u_key or u_key in existing_keys:
             continue
-
         existing_keys.add(u_key)
 
         stage = item.get("stage") or (
@@ -198,7 +208,7 @@ def sync_data(source_type):
         reason = str(item.get("reason") or "").strip()
         auto_note = str(item.get("auto_note") or "").strip()
         full_summary = f"{reason}\n[Note: {auto_note}]" if (auto_note and auto_note not in reason) else (reason or auto_note)
-        link_cell = format_hyperlink(item.get("detail_url", ""))
+        link_cell = format_hyperlink(item.get("detail_url", ""), sep=sep)
 
         if source_type == "YCCG":
             row = [
@@ -215,7 +225,6 @@ def sync_data(source_type):
                 full_summary,
                 link_cell
             ] + empty_sales_cols
-
         elif source_type == "KHLCNT":
             row = [
                 u_key,
@@ -233,7 +242,6 @@ def sync_data(source_type):
                 full_summary,
                 link_cell
             ] + empty_sales_cols
-
         else:  # TBMT
             ver_str = str(item.get("notify_ver") or "00").strip()
             row = [
@@ -257,7 +265,7 @@ def sync_data(source_type):
     if new_rows:
         ws.append_rows(new_rows, value_input_option="USER_ENTERED")
         apply_sheet_layout_and_wrap(spreadsheet, ws, source_type)
-        print(f"[SUCCESS GSHEET] Đã ghi thêm {len(new_rows)} dòng MỚI và định dạng xuống dòng trên sheet '{source_type}'.")
+        print(f"[SUCCESS GSHEET] Đã ghi thêm {len(new_rows)} dòng MỚI (dấu phân cách '{sep}') và định dạng xuống dòng trên sheet '{source_type}'.")
     else:
         print(f"[INFO GSHEET] Toàn bộ {len(records)} bản ghi đã tồn tại trên sheet '{source_type}' (0 dòng trùng được ghi thêm).")
 
